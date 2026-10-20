@@ -1,0 +1,13 @@
+# colcon
+build/
+install/
+log/
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+# datos (los rosbag pesan; versionarlos aparte, p. ej. Git LFS o almacenamiento externo)
+*.db3
+*.mcap
+rosbag*/
