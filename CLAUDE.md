@@ -48,6 +48,7 @@ src/falconscan_velocity/        paquete ROS 2 (ament_python)
     geometry.py                 polar→xz, perfil h(x) en malla espacial, segmentación
     correlation.py              NCC con máscara, subcelda, ambigüedad
     estimator.py                VelocityParams, VelocityEstimator, Status
+    pass_tracker.py             máquina de estados de paso (PassTracker, PassEvent, PassFlag)
   falconscan_velocity/sim/      simulador 2D (ray-casting de volqueta en movimiento)
   falconscan_velocity/velocity_node.py   /scan -> /velocity_estimate
   falconscan_velocity/sim_publisher.py   publica /scan simulado
@@ -56,7 +57,9 @@ src/falconscan_velocity/        paquete ROS 2 (ament_python)
 src/falconscan_interfaces/      mensajes (VelocityEstimate.msg)
 tools/evaluate_sim.py           matriz de ensayos en simulación (ablación)
 docs/algoritmo_velocidad.md     decisiones de diseño + resultados + pendientes
-docs/maquina_estados_paso.md    máquina de estados de paso (entrada/salida del camión); propuesta
+docs/maquina_estados_paso.md    máquina de estados de paso (entrada/salida del camión); núcleo implementado
+tools/visor_lidar/              GUI de pruebas (PyQt6 + pyqtgraph): sensor en vivo, prueba de paso,
+                                rosbags; `instalar.sh` crea el acceso directo del escritorio
 docs/referencias/               reporte técnico original del método
 ```
 

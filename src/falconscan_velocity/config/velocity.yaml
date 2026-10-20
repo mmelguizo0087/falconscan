@@ -57,4 +57,19 @@ velocity_node:
     # --- Filtro temporal (solo visualización; NO usar para integrar posición) ---
     ema_alpha: 0.4
 
+    # --- Máquina de estados de paso (docs/maquina_estados_paso.md) ---
+    # Valores iniciales para 5–15 km/h, 10 Hz y ROI de 6 m; ajustar con pasos reales.
+    pass_enter_scans: 3          # ocupados para confirmar entrada (0.3 s)
+    pass_exit_scans: 5           # vacíos para cerrar el paso (tolera huecos de 0.4 s)
+    pass_empty_scans: 5          # vacíos para salir de ARRANQUE / OBSTRUIDO
+    pass_max_s: 30.0             # ocupación más larga -> TIMEOUT y OBSTRUIDO
+    scan_timeout_s: 0.5          # sin escaneos -> SIN_DATOS
+    pass_edge_margin_m: 1.0      # franja de borde para validar entrada/salida
+    pass_v_min_mps: 1.39         # 5 km/h
+    pass_v_max_mps: 4.17         # 15 km/h
+    pass_v_tolerance_mps: 0.3
+    pass_reverse_v_mps: -0.2     # v OK por debajo cuenta como reversa
+    pass_reverse_scans: 3
+    pass_min_valid_fraction: 0.6 # provisional: el simulador da 75–80 % de escaneos OK
+
     publish_profile: false

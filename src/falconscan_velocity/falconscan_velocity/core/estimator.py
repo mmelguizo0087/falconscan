@@ -70,6 +70,19 @@ class VelocityParams:
     accel_margin_mps: float = 0.3
     # --- Filtro temporal (EMA sobre v ya estimada, reporte §5.10) ---
     ema_alpha: float = 0.4
+    # --- Máquina de estados de paso (core/pass_tracker.py, docs/maquina_estados_paso.md) ---
+    pass_enter_scans: int = 3          # escaneos ocupados para confirmar la entrada
+    pass_exit_scans: int = 5           # escaneos vacíos para cerrar el paso (tolera huecos de 0.4 s)
+    pass_empty_scans: int = 5          # escaneos vacíos para salir de ARRANQUE / OBSTRUIDO
+    pass_max_s: float = 30.0           # ocupación más larga -> TIMEOUT / OBSTRUIDO
+    scan_timeout_s: float = 0.5        # sin escaneos -> SIN_DATOS
+    pass_edge_margin_m: float = 1.0    # franja de borde para validar entrada/salida
+    pass_v_min_mps: float = 1.39       # 5 km/h
+    pass_v_max_mps: float = 4.17       # 15 km/h
+    pass_v_tolerance_mps: float = 0.3
+    pass_reverse_v_mps: float = -0.2
+    pass_reverse_scans: int = 3
+    pass_min_valid_fraction: float = 0.6
 
     @classmethod
     def field_names(cls) -> list[str]:

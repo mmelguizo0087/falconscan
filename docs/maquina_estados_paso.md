@@ -1,8 +1,11 @@
-# Máquina de estados de paso (propuesta, sin implementar)
+# Máquina de estados de paso
 
 Convierte la detección por escaneo que ya hace `VelocityEstimator` (celdas ocupadas y
 `object_extent`) en **pasos de camión** con inicio, fin, `pass_id` y banderas de calidad.
-Estado: **diseño aprobado en estados y salidas (2026-10-20); pendiente implementar.**
+Estado: **núcleo implementado (2026-10-20)** en `core/pass_tracker.py`, con parámetros en
+`VelocityParams`/`velocity.yaml` y pruebas en `test/test_pass_tracker.py`. Se usa en vivo desde el
+visor (`tools/visor_lidar`, pestaña «Prueba de paso»). **Pendiente:** salidas ROS de `velocity_node`
+(`/pass_state`, `/pass_event`, `PassEvent.msg`) y el cambio de `reset()` del estimador.
 
 ## Supuestos de diseño
 
@@ -165,10 +168,21 @@ candidato a medición válida** (criterio de aceptación: cada medición válida
   `n_scans`, `n_valid`, `v_median_mps`, `v_min_mps`, `v_max_mps`.
 - `pass_id` agregado a `VelocityEstimate.msg`.
 
-## Implementación prevista
+## Implementación
 
-- `core/pass_tracker.py`: Python puro, sin ROS. `PassTracker.update(t, ocupado, ext, est)` y
-  `PassTracker.tick(ahora)` → `(estado, eventos)`. Pruebas en `test/`.
+- `core/pass_tracker.py` (hecho): Python puro. `PassTracker.update(t, ocupado, ext, est, ahora)` y
+  `update_from_estimate(est, ahora)` devuelven la lista de eventos; el estado queda en
+  `tracker.state`. `PassTracker.tick(ahora)` detecta `SIN_DATOS`. `t` (stamp) mide el paso;
+  `ahora` (reloj de recepción, por defecto `= t`) solo se usa para `scan_timeout_s`, así un
+  rosbag se reproduce con su propio tiempo.
+  - `ocupado` = `est.status != NO_OBJECT` (equivale a `mask.sum() >= object_min_bins`).
+  - `n_scans` cuenta solo escaneos **ocupados** del paso (los vacíos de `SALIENDO` no son
+    medibles); `POCOS_VALIDOS` usa esa base.
+  - En `ARRANQUE`, `t_primer_ocup` de T2 es el inicio de la racha ocupada actual.
+- Resultados en simulación (`test_pass_tracker.py`, sintéticos): a 1.5 / 3 / 4 m/s, un paso por
+  camión sin banderas, v mediana dentro del 0.5 %; escaneos OK dentro del paso 80 / 74 / 68 %
+  (cerca del umbral provisional de 0.6 a 4 m/s). Con 15 % de pérdida de puntos no se fragmenta,
+  pero levanta `POCOS_VALIDOS` (37/62).
 - **Cambio aparte, a medir por separado:** hoy `VelocityEstimator.reset()` se llama en cada
   escaneo vacío. Con el tracker, el reinicio sería solo en FIN; en `SALIENDO` los escaneos vacíos
   se saltan sin borrar historial (la verificación `BAD_DT` existente acota huecos largos).
