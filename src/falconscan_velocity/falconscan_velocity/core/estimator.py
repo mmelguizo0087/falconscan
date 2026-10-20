@@ -37,7 +37,8 @@ class VelocityParams:
     angle_direction: int = 1
     x_offset_m: float = 0.0
     floor_z_m: float = 0.0
-    range_bias_m: float = 0.0          # sesgo constante caracterizado; 0 hasta medirlo
+    range_bias_m: float = 0.0          # r_corr = (r − range_bias_m) · range_scale (prueba de pared, D11)
+    range_scale: float = 1.0
     # --- Validación / filtrado ---
     range_min_m: float = 0.2
     range_max_m: float = 12.0
@@ -60,6 +61,7 @@ class VelocityParams:
     min_profile_std_m: float = 0.05
     peak_exclusion_bins: int = 3
     deskew_iterations: int = 1         # pasadas extra de compensación por rayo (0 = sin deskew)
+    scan_time_reversed: bool = False   # True si ranges[0] es el ÚLTIMO rayo medido (sllidar_ros2 por defecto)
     # --- Aceptación ---
     min_peak: float = 0.85
     min_prominence: float = 0.05
@@ -140,10 +142,14 @@ class VelocityEstimator:
         p = self.p
         r_min = max(p.range_min_m, scan.range_min)
         r_max = min(p.range_max_m, scan.range_max)
-        r = validate_ranges(scan.ranges, r_min, r_max) - p.range_bias_m
+        r = (validate_ranges(scan.ranges, r_min, r_max) - p.range_bias_m) * p.range_scale
         r = median_filter(r, p.median_window, max_spread=p.median_max_spread_m)
         x, z = polar_to_xz(r, scan.angles, self._geom)
-        tau = np.arange(r.size) * scan.time_increment
+        # Orden temporal de los rayos respecto a stamp (= primer rayo medido). sllidar_ros2 con
+        # inverted:=false publica el arreglo invertido: ranges[0] es el último rayo del barrido.
+        # Con el orden equivocado el deskew corrige con el signo al revés y duplica el sesgo.
+        i = np.arange(r.size)
+        tau = ((r.size - 1 - i) if p.scan_time_reversed else i) * scan.time_increment
         ok = np.isfinite(x)
         return _Frame(scan.stamp, x[ok], z[ok], tau[ok])
 

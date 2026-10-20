@@ -29,6 +29,8 @@ Sensor de referencia del simulador: RPLIDAR S2E (inferido del archivo `BOM_MVP_L
 | D7 | Segmentación exige tramos continuos ≥ 5 celdas | §5.5 (continuidad) | Outliers aislados se contaban como objeto. |
 | D8 | Refinamiento subcelda parabólico sobre C(k) | no especificado | Sin él, la resolución de Δs es dx = 2 cm. |
 | D9 | EMA solo para visualización | §5.10 | Con aceleración, el EMA empeora el RMSE de 0.026 a 0.12 m/s por retardo. Para integrar posición/volumen usar `velocity_mps` + `mid_stamp`. |
+| D10 | Orden temporal de los rayos configurable (`scan_time_reversed`, `true` en el yaml) | — | `sllidar_ros2` (inverted:=false) publica `ranges` invertido: el índice 0 es el último rayo medido. Con el orden equivocado el deskew corrige al revés. Sesgo en simulación con escaneo invertido: sin el parámetro +1.0 / +2.6 / +6.0 % a 1.5 / 3 / 5 m/s (peor que sin deskew: +0.2 / +1.0 / +2.7 %); con el parámetro −0.6 / −0.3 / −0.2 %. |
+| D11 | Corrección de rango `r_corr = (r − range_bias_m) · range_scale`, aplicada antes de la mediana | §6 fase 0 | Prueba de pared con la unidad 1 (20-oct-2026, sensor real, 20 s por distancia, recta ajustada a la pared): a 1.19 / 1.97 / 5.00 m (cinta) mide 1.1969 / 1.9822 / 5.0238 m. Ajuste lineal: `r_medido = 1.004265·d + 2.7 mm` (residuos ≤ 1.1 mm) → `range_scale = 0.995753`, `range_bias_m = 0.0027`. El offset de 2.7 mm no es significativo frente al error de la cinta (±3 mm); la escala sí. En simulación, sin corregir, ese error desplaza el sesgo de velocidad +0.5 / +0.4 / +0.2 % a 1.5 / 3 / 5 m/s. Valores por unidad: rehacer la prueba si se cambia de sensor. |
 
 ## Resultados (simulador, parámetros por defecto)
 

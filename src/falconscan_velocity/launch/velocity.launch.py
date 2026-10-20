@@ -9,7 +9,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -35,7 +35,19 @@ def generate_launch_description():
             package="falconscan_velocity",
             executable="velocity_node",
             name="velocity_node",
+            condition=UnlessCondition(use_sim),
             parameters=[cfg],
+            remappings=[("scan", scan_topic)],
+            output="screen",
+        ),
+        # El simulador publica los rayos en orden de medición y con rangos exactos: sin la
+        # inversión de sllidar_ros2 ni la calibración de rango del sensor físico.
+        Node(
+            package="falconscan_velocity",
+            executable="velocity_node",
+            name="velocity_node",
+            condition=IfCondition(use_sim),
+            parameters=[cfg, {"scan_time_reversed": False, "range_bias_m": 0.0, "range_scale": 1.0}],
             remappings=[("scan", scan_topic)],
             output="screen",
         ),

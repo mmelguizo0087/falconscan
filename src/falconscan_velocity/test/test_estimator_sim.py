@@ -3,6 +3,8 @@
 Los umbrales aquí son de regresión sobre datos sintéticos; los criterios de
 aceptación reales se fijan con el sensor físico (reporte §8.5).
 """
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -46,6 +48,55 @@ def test_deskew_removes_rotation_bias_at_high_speed():
     _, err_off = _metrics(_pass(TruckMotion(v=v), 26.5 / v, VelocityParams(deskew_iterations=0)))
     _, err_on = _metrics(_pass(TruckMotion(v=v), 26.5 / v))
     assert abs(np.mean(err_on)) < abs(np.mean(err_off)) / 3
+
+
+def _time_reversed(scan):
+    """Mismo escaneo con el arreglo invertido, como lo publica sllidar_ros2 (inverted:=false).
+
+    La geometría es idéntica (ángulos recorridos al revés); solo cambia el orden temporal.
+    """
+    n = scan.ranges.size
+    return replace(scan, ranges=scan.ranges[::-1].copy(),
+                   angle_min=scan.angle_min + (n - 1) * scan.angle_increment,
+                   angle_increment=-scan.angle_increment)
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_deskew_with_reversed_scan_order(flag):
+    v = 5.0
+    motion = TruckMotion(v=v)
+    sim = LidarSim(LidarSimConfig())
+    est = VelocityEstimator(VelocityParams(scan_time_reversed=flag))
+    err = np.array([e.velocity_mps - motion.velocity(e.mid_stamp)
+                    for e in (est.process(_time_reversed(s)) for s, _ in sim.run(motion, 26.5 / v))
+                    if e.valid])
+    _, err_off = _metrics(_pass(motion, 26.5 / v, VelocityParams(deskew_iterations=0)))
+    if flag:   # orden declarado correctamente: el deskew funciona igual que en orden directo
+        assert abs(np.mean(err)) < abs(np.mean(err_off)) / 3
+    else:      # orden equivocado: el deskew empeora el sesgo en vez de corregirlo
+        assert abs(np.mean(err)) > abs(np.mean(err_off))
+
+
+def _range_error(scan, scale=1.004265, bias=0.0027):
+    """Rangos con el error medido en la prueba de pared (unidad 1): r_medido = scale·r + bias."""
+    return replace(scan, ranges=scale * scan.ranges + bias)
+
+
+@pytest.mark.parametrize("corrected", [True, False])
+def test_range_calibration_removes_scale_bias(corrected):
+    v = 3.0
+    motion = TruckMotion(v=v)
+    p = VelocityParams(range_bias_m=0.0027, range_scale=1 / 1.004265) if corrected else VelocityParams()
+    est = VelocityEstimator(p)
+    err = np.array([e.velocity_mps - motion.velocity(e.mid_stamp)
+                    for e in (est.process(_range_error(s)) for s, _ in LidarSim(LidarSimConfig()).run(motion, 26.5 / v))
+                    if e.valid])
+    _, err_ref = _metrics(_pass(motion, 26.5 / v))
+    shift = (np.mean(err) - np.mean(err_ref)) / v
+    if corrected:
+        assert abs(shift) < 0.001
+    else:   # sin corregir, el error de escala del rango pasa a la velocidad
+        assert shift > 0.002
 
 
 def test_stationary_truck_reads_zero():
