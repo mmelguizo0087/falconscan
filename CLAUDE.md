@@ -56,6 +56,7 @@ src/falconscan_velocity/        paquete ROS 2 (ament_python)
 src/falconscan_interfaces/      mensajes (VelocityEstimate.msg)
 tools/evaluate_sim.py           matriz de ensayos en simulación (ablación)
 docs/algoritmo_velocidad.md     decisiones de diseño + resultados + pendientes
+docs/maquina_estados_paso.md    máquina de estados de paso (entrada/salida del camión); propuesta
 docs/referencias/               reporte técnico original del método
 ```
 
@@ -72,6 +73,8 @@ python3 tools/evaluate_sim.py --set baseline_scans=1 --set deskew_iterations=0
 # Con ROS 2 (en la RPi o en un PC con ROS)
 colcon build --symlink-install && source install/setup.bash
 ros2 launch falconscan_velocity velocity.launch.py use_sim:=true truck_speed:=2.0
+# Con el RPLIDAR S2E real (driver sllidar_ros2 + velocity_node); PC en 192.168.11.100/24
+ros2 launch falconscan_velocity velocity_s2e.launch.py
 ros2 topic echo /velocity_estimate
 ```
 
