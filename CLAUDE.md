@@ -56,7 +56,7 @@ src/falconscan_velocity/        paquete ROS 2 (ament_python)
 src/falconscan_interfaces/      mensajes (VelocityEstimate.msg)
 tools/evaluate_sim.py           matriz de ensayos en simulación (ablación)
 docs/algoritmo_velocidad.md     decisiones de diseño + resultados + pendientes
-docs/maquina_estados_paso.md    máquina de estados de paso (entrada/salida del camión); propuesta
+docs/maquina_estados_paso.md    máquinas de estados de calibración (al encender) y operación (paso del camión); propuesta
 docs/referencias/               reporte técnico original del método
 ```
 
