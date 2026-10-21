@@ -49,17 +49,20 @@ src/falconscan_velocity/        paquete ROS 2 (ament_python)
     correlation.py              NCC con máscara, subcelda, ambigüedad
     estimator.py                VelocityParams, VelocityEstimator, Status
     pass_tracker.py             máquina de estados de paso (PassTracker, PassEvent, PassFlag)
+    pipeline.py                 VelocityPipeline: estimador + tracker con la política de reinicio (nodo y visor)
+    calibration.py              calibración con el piso: offset de rango y desvío de la flecha 0° (H = cinta)
   falconscan_velocity/sim/      simulador 2D (ray-casting de volqueta en movimiento)
-  falconscan_velocity/velocity_node.py   /scan -> /velocity_estimate
+  falconscan_velocity/velocity_node.py   /scan -> /velocity_estimate, /pass_state, /pass_event
   falconscan_velocity/sim_publisher.py   publica /scan simulado
   config/velocity.yaml          parámetros (1:1 con VelocityParams)
   test/                         pytest; corre sin ROS
-src/falconscan_interfaces/      mensajes (VelocityEstimate.msg)
+src/falconscan_interfaces/      mensajes (VelocityEstimate, PassState, PassEvent)
 tools/evaluate_sim.py           matriz de ensayos en simulación (ablación)
+tools/evaluate_passes.py        máquina de paso en simulación: camiones en ambos sentidos, fragmentación
 docs/algoritmo_velocidad.md     decisiones de diseño + resultados + pendientes
-docs/maquina_estados_paso.md    máquina de estados de paso (entrada/salida del camión); núcleo implementado
+docs/maquina_estados_paso.md    máquinas de estados de calibración (al encender, propuesta) y operación (paso del camión, implementada)
 tools/visor_lidar/              GUI de pruebas (PyQt6 + pyqtgraph): sensor en vivo, prueba de paso,
-                                rosbags; `instalar.sh` crea el acceso directo del escritorio
+                                calibración de montaje, rosbags; `instalar.sh` crea el acceso directo del escritorio
 docs/referencias/               reporte técnico original del método
 ```
 
@@ -72,6 +75,7 @@ cd src/falconscan_velocity && python3 -m pytest -q test
 # Matriz de ensayos en simulación; --set para ablación
 python3 tools/evaluate_sim.py
 python3 tools/evaluate_sim.py --set baseline_scans=1 --set deskew_iterations=0
+python3 tools/evaluate_passes.py                  # pasos; --reset-on-empty = política anterior
 
 # Con ROS 2 (en la RPi o en un PC con ROS)
 colcon build --symlink-install && source install/setup.bash
@@ -79,6 +83,8 @@ ros2 launch falconscan_velocity velocity.launch.py use_sim:=true truck_speed:=2.
 # Con el RPLIDAR S2E real (driver sllidar_ros2 + velocity_node); PC en 192.168.11.100/24
 ros2 launch falconscan_velocity velocity_s2e.launch.py
 ros2 topic echo /velocity_estimate
+ros2 topic echo /pass_event      # INICIO/FIN de cada paso con banderas de calidad
+ros2 topic echo /pass_state      # estado de la máquina de paso y `ready` para la HMI
 ```
 
 ## Convenciones (respetarlas)
@@ -92,8 +98,15 @@ ros2 topic echo /velocity_estimate
 - **Cada mejora se mide.** Toda variante (filtro, Hampel, Kalman, gradiente…) entra solo si
   `tools/evaluate_sim.py` (y después los rosbag reales) muestran una mejora cuantitativa.
   Introducir los cambios de a uno (reporte §12).
-- **Para integrar posición o volumen** usar `velocity_mps`/`displacement_m` con `mid_stamp`
-  (header.stamp del mensaje). `velocity_filtered_mps` (EMA) tiene retardo y es solo para mostrar.
+- **Signo de la velocidad:** estimador y máquina de estados trabajan siempre en +x del marco mundo
+  y miden ambos sentidos. La referencia del usuario (`invert_velocity_sign`) se aplica solo al
+  publicar o mostrar (`with_sign`); no mezclar velocidades con y sin referencia en el núcleo.
+- **Geometría nominal:** la flecha 0° del S2E apunta al piso = rayo ROS 180° (`angle_offset_rad =
+  +π/2`), también en el simulador. `mount_height_m` es la cinta (verdadera); la calibración da
+  valores efectivos (offset de rango, rayo hacia abajo) y no sobrescribe el yaml.
+- **Para integrar posición o volumen** usar `advance_mps · dt_s` (rapidez de avance en el sentido del
+  paso: no depende de la referencia de signo y una reversa resta) con `mid_stamp` (header.stamp del
+  mensaje). `velocity_filtered_mps` (EMA) tiene retardo y es solo para mostrar.
 - Código, comentarios y documentación en español.
 - Los resultados del simulador **no** son evidencia de desempeño de campo; decirlo siempre que
   se reporten.

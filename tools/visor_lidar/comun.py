@@ -1,6 +1,8 @@
 """Piezas compartidas por el visor y la pestaña de prueba de paso: paleta, tarjetas y ajuste de recta."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from pyqtgraph.Qt import QtWidgets
 
@@ -8,6 +10,25 @@ from pyqtgraph.Qt import QtWidgets
 FONDO, PANEL, BORDE = "#12161c", "#1b2129", "#2a323d"
 TEXTO, TEXTO_SUAVE = "#e6edf3", "#8b98a5"
 ACENTO, VERDE, AMBAR, ROJO = "#2fb8c4", "#3fb950", "#d29922", "#f85149"
+
+
+def pantalla_compacta() -> bool:
+    """Pantalla chica (p. ej. 7" de 1024×600): pantalla completa, registro y parámetros plegados.
+
+    FALCONSCAN_COMPACTO=1/0 lo fuerza (para probar el diseño en un monitor grande).
+    """
+    forzado = os.environ.get("FALCONSCAN_COMPACTO")
+    if forzado in ("0", "1"):
+        return forzado == "1"
+    pantalla = QtWidgets.QApplication.primaryScreen()
+    if pantalla is None:
+        return False
+    g = pantalla.availableGeometry()
+    return g.width() <= 1100 or g.height() <= 700
+
+
+def titulo_grafico(texto: str) -> str:
+    return f"<span style='color:{TEXTO};font-size:10pt'>{texto}</span>"
 
 
 def ros_a_sensor(a_ros_deg):
@@ -57,14 +78,34 @@ def ajuste_pared(x: np.ndarray, y: np.ndarray, tol: float = 0.03, intentos: int 
 
 def tarjeta(titulo: str, valor: str = "—", tip: str = "") -> tuple[QtWidgets.QWidget, QtWidgets.QLabel]:
     w = QtWidgets.QFrame()
-    w.setStyleSheet(f"QFrame {{ background: {PANEL}; border: 1px solid {BORDE}; border-radius: 8px; }}")
+    w.setStyleSheet(f"QFrame {{ background: {PANEL}; border: 1px solid {BORDE}; border-radius: 7px; }}")
     lay = QtWidgets.QVBoxLayout(w)
-    lay.setContentsMargins(12, 6, 12, 6)
+    lay.setContentsMargins(9, 3, 9, 3)
     lay.setSpacing(0)
     t = QtWidgets.QLabel(titulo.upper())
-    t.setStyleSheet(f"color: {TEXTO_SUAVE}; font-size: 10px; font-weight: 600; border: none;")
+    t.setStyleSheet(f"color: {TEXTO_SUAVE}; font-size: 9px; font-weight: 600; border: none;")
     v = QtWidgets.QLabel(valor)
-    v.setStyleSheet("font-size: 17px; font-weight: 700; border: none;")
+    v.setStyleSheet(f"font-size: {TARJETA_PX}px; font-weight: 700; border: none;")
+    lay.addWidget(t)
+    lay.addWidget(v)
+    if tip:
+        w.setToolTip(tip)
+    return w, v
+
+
+TARJETA_PX = 15      # tamaño del valor en las tarjetas
+
+
+def chip(titulo: str, tip: str = "") -> tuple[QtWidgets.QWidget, QtWidgets.QLabel]:
+    """Métrica de una línea para la barra de estado: «TÍTULO valor»."""
+    w = QtWidgets.QWidget()
+    lay = QtWidgets.QHBoxLayout(w)
+    lay.setContentsMargins(8, 0, 8, 0)
+    lay.setSpacing(5)
+    t = QtWidgets.QLabel(titulo.upper())
+    t.setStyleSheet(f"color: {TEXTO_SUAVE}; font-size: 10px; font-weight: 600;")
+    v = QtWidgets.QLabel("—")
+    v.setStyleSheet("font-size: 12px; font-weight: 700;")
     lay.addWidget(t)
     lay.addWidget(v)
     if tip:

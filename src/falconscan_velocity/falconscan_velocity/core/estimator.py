@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from enum import IntEnum
 
 import numpy as np
@@ -33,7 +33,7 @@ class Status(IntEnum):
 class VelocityParams:
     # --- Montaje (ficha de calibración, reporte §6 fase 0) ---
     mount_height_m: float = 5.0
-    angle_offset_rad: float = -math.pi / 2
+    angle_offset_rad: float = math.pi / 2   # flecha 0° del S2E al piso = rayo ROS 180° hacia abajo
     angle_direction: int = 1
     x_offset_m: float = 0.0
     floor_z_m: float = 0.0
@@ -55,7 +55,7 @@ class VelocityParams:
     object_min_run_bins: int = 5       # tramo continuo mínimo (10 cm con dx = 2 cm)
     # --- Correlación ---
     baseline_scans: int = 3            # comparar con el escaneo de hace N (Δt mayor = menos ruido en v)
-    v_min_mps: float = -0.5
+    v_min_mps: float = -6.0            # simétrico: mide ambos sentidos (D13)
     v_max_mps: float = 6.0
     min_overlap_bins: int = 60
     min_profile_std_m: float = 0.05
@@ -78,15 +78,28 @@ class VelocityParams:
     scan_timeout_s: float = 0.5        # sin escaneos -> SIN_DATOS
     pass_edge_margin_m: float = 1.0    # franja de borde para validar entrada/salida
     pass_v_min_mps: float = 1.39       # 5 km/h
-    pass_v_max_mps: float = 4.17       # 15 km/h
+    pass_v_max_mps: float = 2.78       # 10 km/h (equipo, 2026-10-21)
     pass_v_tolerance_mps: float = 0.3
     pass_reverse_v_mps: float = -0.2
     pass_reverse_scans: int = 3
     pass_min_valid_fraction: float = 0.6
+    pass_both_directions: bool = True  # el vehículo puede cruzar hacia +x o hacia −x (D13)
+    # --- Calibración con el piso (core/calibration.py; docs/maquina_estados_paso.md, sección 1) ---
+    cal_offset_tol_ok_m: float = 0.03      # |b| hasta aquí: «Altura OK»; si no, «offset corregido»
+    cal_offset_tol_max_m: float = 0.20     # |b| mayor: FALLA, revisar montaje (equipo, 2026-10-21)
+    cal_angle_tol_ok_rad: float = 0.0087   # 0.5°: 2.6 cm de altura en el borde de la ROI (x = 3 m)
+    cal_angle_tol_max_rad: float = 0.0873  # 5°: con la flecha al piso, soporte flojo o mal instalado
+    # --- Referencia de signo para la salida (no cambia la geometría ni la ROI) ---
+    invert_velocity_sign: bool = False # True: positivo = hacia −x
 
     @classmethod
     def field_names(cls) -> list[str]:
         return [f.name for f in fields(cls)]
+
+    @property
+    def velocity_sign(self) -> int:
+        """Signo de la referencia del usuario: multiplica las velocidades del marco mundo."""
+        return -1 if self.invert_velocity_sign else 1
 
     @property
     def geometry(self) -> MountGeometry:
@@ -122,6 +135,17 @@ class VelocityEstimate:
     @property
     def valid(self) -> bool:
         return self.status == Status.OK
+
+    def with_sign(self, sign: int) -> VelocityEstimate:
+        """Copia con velocidad y desplazamiento en la referencia del usuario (sign = ±1).
+
+        El estimador y la máquina de estados trabajan siempre en el marco mundo (+x); el signo
+        se aplica solo a lo que se publica o se muestra.
+        """
+        if sign >= 0:
+            return self
+        return replace(self, velocity_mps=-self.velocity_mps, velocity_filtered_mps=-self.velocity_filtered_mps,
+                       displacement_m=-self.displacement_m, shift_bins=-self.shift_bins)
 
 
 @dataclass
@@ -180,7 +204,13 @@ class VelocityEstimator:
     def profile_from_scan(self, scan: Scan, v: float = 0.0) -> np.ndarray:
         return self._profile(self._frame_from_scan(scan), v)
 
-    def process(self, scan: Scan) -> VelocityEstimate:
+    def process(self, scan: Scan, keep_history: bool = False) -> VelocityEstimate:
+        """Estima la velocidad de un escaneo.
+
+        ``keep_history``: con un escaneo sin objeto, conservar el historial en vez de reiniciar.
+        Lo usa ``VelocityPipeline`` dentro de un paso (huecos de SALIENDO); los huecos largos los
+        acota la verificación de Δt (BAD_DT). Por defecto (uso aislado) reinicia como siempre.
+        """
         p = self.p
         frame = self._frame_from_scan(scan)
         v_hint = self._v_filt if (np.isfinite(self._v_filt) and p.deskew_iterations > 0) else 0.0
@@ -190,7 +220,8 @@ class VelocityEstimator:
         out = VelocityEstimate(stamp=scan.stamp, status=Status.NO_OBJECT)
 
         if int(mask.sum()) < p.object_min_bins:
-            self.reset()
+            if not keep_history:
+                self.reset()
             return out
         out.object_extent = object_extent(h, self._grid, p.object_h_threshold_m, p.object_min_run_bins)
 

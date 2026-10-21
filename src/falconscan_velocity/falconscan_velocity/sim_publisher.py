@@ -1,6 +1,7 @@
 """Nodo ROS 2 que publica /scan simulado: permite probar velocity_node sin hardware.
 
     ros2 run falconscan_velocity sim_publisher --ros-args -p truck_speed_mps:=1.5
+    ros2 run falconscan_velocity sim_publisher --ros-args -p alternate_direction:=true   # +x, −x, +x…
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ class SimPublisher(Node):
         super().__init__("lidar_sim")
         self.v = self.declare_parameter("truck_speed_mps", 1.5).value
         self.gap = self.declare_parameter("gap_between_trucks_s", 4.0).value
+        self.alternate = self.declare_parameter("alternate_direction", False).value
         hz = self.declare_parameter("scan_hz", 10.0).value
         self.frame_id = self.declare_parameter("frame_id", "lidar_velocity").value
         self.sim = LidarSim(LidarSimConfig(scan_hz=hz))
@@ -30,8 +32,11 @@ class SimPublisher(Node):
         self.create_timer(self.period, self.tick)
 
     def tick(self) -> None:
-        t_cycle = self.t % (self.pass_dur + self.gap)
-        motion = TruckMotion(x0=-10.0 - self.v * (self.t - t_cycle), v=self.v)
+        ciclo = self.pass_dur + self.gap
+        t0_ciclo = self.t - self.t % ciclo
+        # Con alternate_direction los camiones impares van hacia −x (entran por x máx)
+        v = -self.v if self.alternate and int(round(t0_ciclo / ciclo)) % 2 else self.v
+        motion = TruckMotion(x0=(-10.0 if v > 0 else 16.5) - v * t0_ciclo, v=v)
         s = self.sim.scan_at(self.t, motion)
         stamp = self.get_clock().now().to_msg()
         msg = LaserScan()

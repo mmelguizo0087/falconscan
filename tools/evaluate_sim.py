@@ -40,7 +40,10 @@ def run_case(motion, duration, params, cfg):
         if e.valid:
             vr = motion.velocity(e.mid_stamp)
             rows.append((e.velocity_mps, e.velocity_filtered_mps, vr, inside))
-    a = np.array(rows) if rows else np.empty((0, 4))
+    if not rows:                       # p. ej. sentido contrario fuera del rango de búsqueda
+        nan = float("nan")
+        return dict(valid=0.0, n=0, bias=nan, mae=nan, rmse=nan, rmse_ema=nan, max=nan, ms=1e3 * np.mean(t_proc))
+    a = np.array(rows)
     n_ok_in = int(a[:, 3].sum()) if len(a) else 0
     err = a[:, 0] - a[:, 2]
     errf = a[:, 1] - a[:, 2]
@@ -53,6 +56,8 @@ def cases():
     base = LidarSimConfig()
     for v in (0.3, 0.8, 1.5, 3.0, 5.0):
         yield f"constante {v:.1f} m/s", TruckMotion(v=v), 26.5 / v, base
+    for v in (1.5, 3.0, 5.0):   # sentido contrario: entra por x máx y sale por x mín
+        yield f"contrario {-v:.1f} m/s", TruckMotion(x0=16.5, v=-v), 26.5 / v, base
     yield "acelera 0.5→3.2 m/s", TruckMotion(position=lambda t: -9.0 + 0.5 * t + 0.3 * t ** 2), 9.0, base
     yield "frena 3.0→0.6 m/s", TruckMotion(position=lambda t: -9.0 + 3.0 * t - 0.3 * t ** 2), 8.0, base
     yield "pérdida 15 % puntos", TruckMotion(v=1.5), 18.0, LidarSimConfig(dropout_prob=0.15)

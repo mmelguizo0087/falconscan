@@ -23,15 +23,15 @@ import pyqtgraph as pg
 import yaml
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from comun import ajuste_pared, ros_a_sensor, tarjeta
+from comun import pantalla_compacta, ros_a_sensor, tarjeta, titulo_grafico
 
 try:
-    from falconscan_velocity.core import (PassEvent, PassFlag, PassState, PassTracker, Scan, Status,
-                                         VelocityEstimator, VelocityParams, polar_to_xz, validate_ranges)
+    from falconscan_velocity.core import (PassEvent, PassFlag, PassState, Scan, Status, VelocityParams,
+                                         VelocityPipeline, polar_to_xz, validate_ranges)
 except ImportError:   # sin `source install/setup.bash`: usar el código fuente del repo
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "falconscan_velocity"))
-    from falconscan_velocity.core import (PassEvent, PassFlag, PassState, PassTracker, Scan, Status,
-                                         VelocityEstimator, VelocityParams, polar_to_xz, validate_ranges)
+    from falconscan_velocity.core import (PassEvent, PassFlag, PassState, Scan, Status, VelocityParams,
+                                         VelocityPipeline, polar_to_xz, validate_ranges)
 
 # La mediana del núcleo avisa en cada ventana de rayos sin retorno (normal en el S2E)
 warnings.filterwarnings("ignore", "All-NaN slice", RuntimeWarning)
@@ -56,6 +56,7 @@ BANDERAS_TXT = {
     PassFlag.POCOS_VALIDOS: "pocos válidos",
     PassFlag.TIMEOUT: "timeout",
     PassFlag.SENSOR_PERDIDO: "sensor perdido",
+    PassFlag.SENTIDO_INCONSISTENTE: "sentido inconsistente",
 }
 STATUS_TXT = {   # por qué no hay velocidad en este escaneo (core/estimator.py, Status)
     Status.NO_OBJECT: "sin objeto", Status.WARMING_UP: "iniciando", Status.BAD_DT: "Δt inválido",
@@ -78,7 +79,9 @@ def guardar_params(ruta: Path, p: VelocityParams, nombres: list[str]) -> list[st
     cambiados = []
     for n in nombres:
         v = getattr(p, n)
-        if isinstance(v, float):
+        if isinstance(v, bool):
+            val = "true" if v else "false"
+        elif isinstance(v, float):
             val = f"{v:.7g}"
             val = val if any(c in val for c in ".e") else val + ".0"   # ROS 2 exige punto en los float
         else:
@@ -115,8 +118,9 @@ class Procesamiento:
     def configurar(self, params: VelocityParams):
         with self._lock:
             self.p = params
-            self.est = VelocityEstimator(params)
-            self.tr = PassTracker(params)
+            # Misma política de reinicio del estimador que velocity_node (core/pipeline.py)
+            self.pipe = VelocityPipeline(params)
+            self.est, self.tr = self.pipe.estimator, self.pipe.tracker
             self.hist: deque = deque(maxlen=int(VENTANA_V_S * 12))
             self.eventos: list[PassEvent] = []
             self.ultimo = None
@@ -128,8 +132,7 @@ class Procesamiento:
             return
         t1 = time.perf_counter()
         with self._lock:
-            e = self.est.process(scan)
-            ev = self.tr.update_from_estimate(e, ahora)
+            e, ev = self.pipe.process(scan, ahora)
             if self.t0 is None:
                 self.t0 = scan.stamp
             h = None if self.est.last_profile is None else self.est.last_profile.copy()
@@ -142,12 +145,12 @@ class Procesamiento:
         if not self.activo:
             return
         with self._lock:
-            self.eventos += self.tr.tick(ahora)
+            self.eventos += self.pipe.tick(ahora)
 
     def cortar(self):
         """La fuente se detuvo: un paso abierto se cierra como SENSOR_PERDIDO (T11) y queda SIN_DATOS."""
         with self._lock:
-            self.eventos += self.tr.tick(math.inf)
+            self.eventos += self.pipe.tick(math.inf)
         self.activo = False
 
     def tomar(self):
@@ -269,8 +272,8 @@ CAMPOS = {
         ("floor_z_m", "Altura del piso", -2, 2, 3, 0.01, "m", 1, "z del piso (0 si H se mide desde el piso)"),
     ],
     "ROI y detección": [
-        ("roi_x_min_m", "ROI x mín (entrada)", -15, 0, 2, 0.1, "m", 1, "Borde de entrada: el vehículo avanza hacia +x"),
-        ("roi_x_max_m", "ROI x máx (salida)", 0, 15, 2, 0.1, "m", 1, "Borde de salida"),
+        ("roi_x_min_m", "ROI x mín", -15, 0, 2, 0.1, "m", 1, "Borde de entrada de los vehículos hacia +x (salida de los que van hacia −x)"),
+        ("roi_x_max_m", "ROI x máx", 0, 15, 2, 0.1, "m", 1, "Borde de salida de los vehículos hacia +x (entrada de los que van hacia −x)"),
         ("roi_z_max_m", "Altura máx. considerada", 0.5, 30, 2, 0.1, "m", 1, "Por encima se descarta (estructura)"),
         ("object_h_threshold_m", "Umbral de altura objeto", 0.05, 5, 2, 0.05, "m", 1, "Altura sobre el piso a partir de la cual una celda es objeto"),
         ("object_min_bins", "Celdas mínimas objeto", 1, 500, 0, 1, "celdas", 1, "Con dx = 2 cm, 25 celdas = 0.5 m"),
@@ -290,7 +293,19 @@ CAMPOS = {
         ("pass_min_valid_fraction", "Fracción mínima válida", 0, 100, 0, 5, "%", 100, "Escaneos con velocidad OK dentro del paso"),
     ],
 }
-NOMBRES_EDITABLES = [c[0] for g in CAMPOS.values() for c in g] + ["angle_offset_rad", "angle_direction"]
+# angle_offset_rad no está: el yaml guarda el NOMINAL (flecha 0° al piso) y la calibración da el
+# efectivo en cada encendido (docs/maquina_estados_paso.md, decisiones del 2026-10-21)
+NOMBRES_EDITABLES = [c[0] for g in CAMPOS.values() for c in g] + ["angle_direction", "pass_both_directions",
+                                                                   "invert_velocity_sign"]
+# Columnas de la tabla de pasos
+COLUMNAS = ["#", "Sentido", "Inicio", "Duración", "v mediana", "v mín–máx", "Válidos", "Huecos", "Banderas",
+            "v ref (km/h)", "Error", "Notas"]
+C_SENTIDO, C_INICIO, C_DUR, C_VMED, C_VRANGO, C_VALIDOS, C_HUECOS, C_BANDERAS, C_REF, C_ERR, C_NOTAS = range(1, 12)
+
+
+def sentido_txt(d: int) -> str:
+    """Sentido ya en la referencia del usuario."""
+    return {1: "+", -1: "−"}.get(d, "?")
 
 
 class PanelPaso(QtWidgets.QWidget):
@@ -303,6 +318,7 @@ class PanelPaso(QtWidgets.QWidget):
         self.carpeta = carpeta_datos
         self.params_yaml = cargar_params(yaml_ruta)
         self.fuente_sim = False
+        self.calibracion: dict | None = None     # valores efectivos de la pestaña Calibración (no van al yaml)
         self.proc = Procesamiento(self._params_efectivos(self.params_yaml))
         self.filas: dict[int, int] = {}            # pass_id -> fila de la tabla
         self.regiones: dict[int, tuple] = {}       # pass_id -> (región, texto)
@@ -316,8 +332,20 @@ class PanelPaso(QtWidgets.QWidget):
     def _params_efectivos(self, base: VelocityParams) -> VelocityParams:
         """El simulador publica en orden de medición y sin error de rango (igual que el launch)."""
         if self.fuente_sim:
-            return replace(base, scan_time_reversed=False, range_scale=1.0, range_bias_m=0.0)
+            base = replace(base, scan_time_reversed=False, range_scale=1.0, range_bias_m=0.0)
+        if self.calibracion:                     # offset de rango calibrado sobre lo anterior
+            base = replace(base, **self.calibracion)
         return base
+
+    def fijar_calibracion(self, efectivos: dict | None):
+        """Valores efectivos de la calibración (p. ej. range_bias_m). Se usan, pero no se guardan."""
+        self.calibracion = efectivos
+        self.aplicar(silencioso=True)
+
+    def _texto_cambios(self) -> str:
+        if self.calibracion:
+            return "● Calibración aplicada (efectiva; el yaml guarda los nominales)"
+        return "" if self.params_form == self.params_yaml else "● Aplicado, sin guardar en velocity.yaml"
 
     def fijar_fuente(self, sim: bool):
         self.fuente_sim = sim
@@ -330,6 +358,10 @@ class PanelPaso(QtWidgets.QWidget):
             w.setValue(int(round(v)) if isinstance(w, QtWidgets.QSpinBox) else v)
             w.blockSignals(False)
         self.c_dir.setCurrentIndex(0 if p.angle_direction > 0 else 1)
+        for chk, valor in ((self.chk_ambos, p.pass_both_directions), (self.chk_invertir, p.invert_velocity_sign)):
+            chk.blockSignals(True)
+            chk.setChecked(bool(valor))
+            chk.blockSignals(False)
         self.c_nadir.setValue(nadir_ros_deg(p))
         self._actualizar_nadir_txt()
         self.lbl_cambios.setText("")
@@ -350,6 +382,8 @@ class PanelPaso(QtWidgets.QWidget):
                     valores[n] = int(round(valores[n]))
         d = -1 if self.c_dir.currentIndex() == 1 else 1
         valores["angle_direction"] = d
+        valores["pass_both_directions"] = self.chk_ambos.isChecked()
+        valores["invert_velocity_sign"] = self.chk_invertir.isChecked()
         if d == base.angle_direction and math.isclose(self.c_nadir.value(), round(nadir_ros_deg(base), 2), abs_tol=1e-9):
             valores["angle_offset_rad"] = base.angle_offset_rad
         else:
@@ -367,7 +401,7 @@ class PanelPaso(QtWidgets.QWidget):
         self.params_form = p
         self._dibujar_estatico()
         self._limpiar_grafico_v()
-        self.lbl_cambios.setText("" if p == self.params_yaml else "● Aplicado, sin guardar en velocity.yaml")
+        self.lbl_cambios.setText(self._texto_cambios())
         if not silencioso:
             self.v._log("Parámetros de paso aplicados; máquina de estados reiniciada (ARRANQUE).", "aviso")
 
@@ -377,7 +411,8 @@ class PanelPaso(QtWidgets.QWidget):
         if not cambios:
             QtWidgets.QMessageBox.information(self, "Guardar", "No hay cambios respecto a velocity.yaml.")
             return
-        lista = "\n".join(f"  {n}: {getattr(self.params_yaml, n)} → {getattr(p, n):.6g}" for n in cambios)
+        fmt = lambda v: str(v).lower() if isinstance(v, bool) else f"{v:.6g}"   # noqa: E731
+        lista = "\n".join(f"  {n}: {fmt(getattr(self.params_yaml, n))} → {fmt(getattr(p, n))}" for n in cambios)
         r = QtWidgets.QMessageBox.question(
             self, "Guardar en velocity.yaml",
             f"Se escribirán estos valores en\n{self.yaml_ruta}\n\n{lista}\n\n"
@@ -389,57 +424,36 @@ class PanelPaso(QtWidgets.QWidget):
         self.aplicar(silencioso=True)
         self.v._log(f"velocity.yaml actualizado: {', '.join(escritos)}", "ok")
 
+    @property
+    def signo(self) -> int:
+        """Referencia de signo del usuario: el núcleo trabaja en +x del marco mundo."""
+        return self.proc.p.velocity_sign
+
+    def _referencia_cambiada(self, invertir: bool):
+        """Solo cambia cómo se muestran los signos: el estimador y la máquina de estados siguen igual."""
+        self.proc.p = replace(self.proc.p, invert_velocity_sign=invertir)
+        self.params_form = replace(self.params_form, invert_velocity_sign=invertir)
+        self._dibujar_estatico()
+        for f in range(self.tabla.rowCount()):
+            ev = self._evento_de_fila(f)
+            if ev is not None:
+                self._fila_fin(ev)
+            else:
+                ini = self._inicio_de_fila(f)
+                if ini is not None:
+                    self.tabla.setItem(f, C_SENTIDO, self._item(sentido_txt(ini.with_sign(self.signo).direction)))
+        self.lbl_cambios.setText(self._texto_cambios())
+        self.v._log("Referencia de velocidad: positivo = " + ("hacia −x (←)." if invertir else "hacia +x (→)."), "info")
+
     def recargar(self):
+        """Vuelve a los nominales del yaml y descarta la calibración aplicada."""
+        self.calibracion = None
         self.params_yaml = cargar_params(self.yaml_ruta)
         self._cargar_en_formulario(self.params_yaml)
         self.aplicar()
 
     def _actualizar_nadir_txt(self):
-        self.lbl_nadir.setText(f"= {ros_a_sensor(self.c_nadir.value()):+.1f}° en la marca del sensor (S2E)")
-
-    # ------------------------------------------------------------------ calibración con el piso
-    def calibrar_piso(self, buffer, corregir):
-        if len(buffer) < 5:
-            QtWidgets.QMessageBox.information(self, "Calibrar con el piso",
-                                              "Inicia la lectura y espera unos segundos con la ROI vacía.")
-            return
-        n = buffer[-1].ranges.size
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            r = corregir(np.nanmedian(np.stack([e.ranges for e in buffer[-10:] if e.ranges.size == n]), axis=0))
-        ang = np.degrees(buffer[-1].ang) % 360
-        actual = self.c_nadir.value()
-        candidatos = []
-        for c in range(0, 360, 5):
-            sel = np.abs((ang - c + 180) % 360 - 180) < 25
-            f = ajuste_pared(r[sel] * np.cos(np.radians(ang[sel])), r[sel] * np.sin(np.radians(ang[sel])))
-            if not f:
-                continue
-            d, sigma, normal, npts = f
-            # El pie de la perpendicular debe verse dentro de la ventana y casi todos los puntos en la recta
-            if abs((normal - c + 180) % 360 - 180) < 10 and npts >= 0.7 * np.isfinite(r[sel]).sum():
-                candidatos.append((abs((normal - actual + 180) % 360 - 180), d, sigma, normal, npts))
-        if not candidatos:
-            QtWidgets.QMessageBox.warning(self, "Calibrar con el piso",
-                                          "No encontré ninguna superficie plana clara. Revisa que el piso se vea "
-                                          "y que no haya objetos en el plano de escaneo.")
-            return
-        _, d, sigma, normal, npts = min(candidatos)
-        H = d + self.campos["floor_z_m"][0].value()
-        r = QtWidgets.QMessageBox.question(
-            self, "Calibrar con el piso",
-            f"Superficie plana más cercana a la dirección «abajo» actual ({actual:.1f}° ROS):\n\n"
-            f"  dirección perpendicular: {normal:.2f}° ROS ({ros_a_sensor(normal):+.2f}° en la marca del sensor)\n"
-            f"  distancia: {d:.3f} m   (σ {sigma * 1e3:.1f} mm, {npts} puntos, mediana de 10 escaneos)\n\n"
-            f"¿Usarla como piso? Quedaría H = {H:.3f} m y «abajo» = {normal:.2f}° ROS.\n"
-            "Supone piso horizontal y plano de escaneo vertical. Si no es el piso, cancela y\n"
-            "ajusta el ángulo a mano.")
-        if r != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
-        self.campos["mount_height_m"][0].setValue(H)
-        self.c_nadir.setValue(normal)
-        self.aplicar()
-        self.v._log(f"Calibración con el piso: H = {H:.3f} m, abajo = {normal:.2f}° ROS (aplicado, sin guardar).", "ok")
+        self.lbl_nadir.setText(f"= {ros_a_sensor(self.c_nadir.value()):+.1f}° en la marca del S2E")
 
     # ------------------------------------------------------------------ construcción
     def _construir(self):
@@ -449,29 +463,43 @@ class PanelPaso(QtWidgets.QWidget):
         # --- cabecera: estado + contadores
         cab = QtWidgets.QHBoxLayout()
         self.estado = QtWidgets.QLabel()
-        self.estado.setMinimumWidth(230)
+        self.estado.setMinimumWidth(150)
         self.estado.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         cab.addWidget(self.estado)
         cont = QtWidgets.QVBoxLayout()
         self.estado_desc = QtWidgets.QLabel()
         self.estado_desc.setWordWrap(True)
-        self.estado_desc.setStyleSheet("font-size: 13px;")
+        self.estado_desc.setStyleSheet("font-size: 11px;")
         self.listo = QtWidgets.QLabel()
         cont.addWidget(self.estado_desc)
-        cont.addWidget(self.listo)
+        fila_listo = QtWidgets.QHBoxLayout()
+        fila_listo.addWidget(self.listo)
+        fila_listo.addStretch(1)
+        self.chk_invertir = QtWidgets.QCheckBox("Invertir referencia (+ hacia ←)")
+        self.chk_invertir.setToolTip("Por defecto la velocidad es positiva cuando el vehículo va hacia +x (→ en el plano)\n"
+                                     "y negativa en el sentido contrario. Marcado, al revés.\n"
+                                     "Se aplica de inmediato y no reinicia la máquina de estados.\n"
+                                     "«Guardar en yaml» la deja para velocity_node.  [invert_velocity_sign]")
+        self.chk_invertir.toggled.connect(self._referencia_cambiada)
+        fila_listo.addWidget(self.chk_invertir)
+        cont.addLayout(fila_listo)
         cab.addLayout(cont, 1)
         w, self.k_v = tarjeta("Velocidad", tip="Velocidad cruda del último escaneo válido (no la EMA)")
+        self.k_v.setMinimumWidth(92)
         cab.addWidget(w)
-        w, self.k_id = tarjeta("Paso actual")
+        w, self.k_id = tarjeta("Paso", tip="Paso abierto ahora")
         cab.addWidget(w)
-        w, self.k_pasos = tarjeta("Pasos (válidos)", tip="Pasos cerrados en esta sesión; válidos = sin banderas")
+        w, self.k_pasos = tarjeta("Pasos (ok)", tip="Pasos cerrados en esta sesión; válidos = sin banderas")
         cab.addWidget(w)
-        w, self.k_falsos = tarjeta("Falsas entradas", tip="Ocupaciones que no llegaron a confirmarse (T4)")
+        w, self.k_falsos = tarjeta("Falsas", tip="Ocupaciones que no llegaron a confirmarse (T4)")
         cab.addWidget(w)
-        w, self.k_obs = tarjeta("Obstrucciones")
+        w, self.k_obs = tarjeta("Obstruc.", tip="Obstrucciones (ocupación demasiado larga)")
         cab.addWidget(w)
         w, self.k_cpu = tarjeta("Cómputo", tip="Tiempo medio de estimador + máquina de estados por escaneo")
         cab.addWidget(w)
+        self.b_params = QtWidgets.QPushButton("⚙ Parámetros", checkable=True)
+        self.b_params.setToolTip("Muestra u oculta el panel de parámetros (montaje, ROI, máquina de estados)")
+        cab.addWidget(self.b_params)
         raiz.addLayout(cab)
 
         div = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
@@ -479,7 +507,7 @@ class PanelPaso(QtWidgets.QWidget):
 
         # --- plano del pórtico
         self.g_xz = pg.PlotWidget()
-        self.g_xz.setTitle("<span style='color:#e6edf3;font-size:12pt'>Plano de escaneo (marco mundo)</span>")
+        self.g_xz.setTitle(titulo_grafico("Plano de escaneo (marco mundo)"))
         self.g_xz.setAspectLocked(True)
         self.g_xz.showGrid(x=True, y=True, alpha=0.12)
         self.g_xz.setLabel("bottom", "x: avance →  [m]")
@@ -509,11 +537,12 @@ class PanelPaso(QtWidgets.QWidget):
         self.g_xz.addItem(self.sensor)
         self.txt_roi = pg.TextItem("", color="#2fb8c4", anchor=(0, 1))
         self.g_xz.addItem(self.txt_roi)
+        self.txt_signo = pg.TextItem("", color="#3fb950")
+        self.g_xz.addItem(self.txt_signo)
         izq.addWidget(self.g_xz)
 
         # --- velocidad vs tiempo
         self.g_v = pg.PlotWidget()
-        self.g_v.setTitle("<span style='color:#e6edf3;font-size:12pt'>Velocidad estimada</span>")
         self.g_v.showGrid(x=True, y=True, alpha=0.15)
         self.g_v.setLabel("left", "km/h")
         self.g_v.setLabel("bottom", "tiempo [s]")
@@ -521,24 +550,32 @@ class PanelPaso(QtWidgets.QWidget):
         self.banda = pg.LinearRegionItem(orientation="horizontal", movable=False,
                                          brush=pg.mkBrush(63, 185, 80, 22), pen=pg.mkPen(None))
         self.g_v.addItem(self.banda)
+        self.banda2 = pg.LinearRegionItem(orientation="horizontal", movable=False,
+                                          brush=pg.mkBrush(63, 185, 80, 22), pen=pg.mkPen(None))
+        self.g_v.addItem(self.banda2)
+        self.g_v.addItem(pg.InfiniteLine(angle=0, pen=pg.mkPen("#8b98a5", width=1)))
         self.v_ema = pg.PlotDataItem(pen=pg.mkPen("#2fb8c4", width=2), name="EMA (solo visual)")
         self.v_ok = pg.ScatterPlotItem(size=6, brush=pg.mkBrush("#3fb950"), pen=None, name="v cruda (OK)")
         self.g_v.addItem(self.v_ema)
         self.g_v.addItem(self.v_ok)
-        izq.addWidget(self.g_v)
+        sub = QtWidgets.QTabWidget()          # velocidad y tabla comparten el espacio de abajo
+        sub.addTab(self.g_v, "Velocidad")
 
         # --- tabla de pasos
         caja = QtWidgets.QWidget()
         lt = QtWidgets.QVBoxLayout(caja)
-        lt.setContentsMargins(0, 4, 0, 0)
+        lt.setContentsMargins(0, 2, 0, 0)
         fila = QtWidgets.QHBoxLayout()
         t = QtWidgets.QLabel("Pasos de la sesión")
         t.setStyleSheet("font-weight: 700; color: #2fb8c4;")
         fila.addWidget(t)
-        ayuda = QtWidgets.QLabel("Escribe la velocidad de referencia (radar, GPS o cronómetro) para calcular el error.")
+        ayuda = QtWidgets.QLabel("Escribe la v de referencia (radar, GPS, cronómetro) para ver el error. "
+                                 "Signo = sentido.")
+        ayuda.setWordWrap(True)
         ayuda.setObjectName("suave")
         fila.addWidget(ayuda, 1)
         b = QtWidgets.QPushButton("Exportar CSV")
+        b.setToolTip(f"Guarda la tabla de pasos en {self.carpeta / 'pruebas_paso'}")
         b.clicked.connect(self.exportar)
         fila.addWidget(b)
         b = QtWidgets.QPushButton("Nueva sesión")
@@ -546,17 +583,20 @@ class PanelPaso(QtWidgets.QWidget):
         b.clicked.connect(self.nueva_sesion)
         fila.addWidget(b)
         lt.addLayout(fila)
-        self.tabla = QtWidgets.QTableWidget(0, 11)
-        self.tabla.setHorizontalHeaderLabels(["#", "Inicio", "Duración", "v mediana", "v mín–máx", "Válidos",
-                                              "Huecos", "Banderas", "v ref (km/h)", "Error", "Notas"])
+        self.tabla = QtWidgets.QTableWidget(0, len(COLUMNAS))
+        self.tabla.setHorizontalHeaderLabels(COLUMNAS)
+        self.tabla.horizontalHeaderItem(C_REF).setToolTip("Velocidad de referencia en km/h. El error se calcula sobre la\n"
+                                                          "rapidez; si la escribes con signo, también se verifica el sentido.")
         self.tabla.verticalHeader().setVisible(False)
         self.tabla.horizontalHeader().setStretchLastSection(True)
         self.tabla.setStyleSheet("QTableWidget { background: #0f1318; gridline-color: #2a323d; border: 1px solid #2a323d; }"
                                  "QHeaderView::section { background: #1b2129; color: #8b98a5; border: none; padding: 4px; }")
         self.tabla.itemChanged.connect(self._celda_editada)
         lt.addWidget(self.tabla)
-        izq.addWidget(caja)
-        izq.setSizes([380, 230, 220])
+        sub.addTab(caja, "Pasos")
+        self.sub = sub
+        izq.addWidget(sub)
+        izq.setSizes([290, 180])
         div.addWidget(izq)
 
         # --- panel de configuración
@@ -567,15 +607,24 @@ class PanelPaso(QtWidgets.QWidget):
         for grupo, campos in CAMPOS.items():
             g = QtWidgets.QGroupBox(grupo)
             f = QtWidgets.QFormLayout(g)
+            if grupo == "Máquina de estados":
+                self.chk_ambos = QtWidgets.QCheckBox("Medir en ambos sentidos")
+                self.chk_ambos.setToolTip("Acepta vehículos hacia +x (entran por x mín) y hacia −x (entran por x máx).\n"
+                                          "El sentido de cada paso sale del signo de su velocidad mediana.\n"
+                                          "Desmarcado: solo hacia +x; el sentido contrario queda con banderas.\n"
+                                          "[pass_both_directions] (pulsa Aplicar)")
+                f.addRow(self.chk_ambos)
             if grupo == "Montaje":
                 self.c_nadir = _spin(0, 359.99, 2, 0.5, "°")
                 self.c_nadir.setWrapping(True)
-                self.c_nadir.setToolTip("Ángulo ROS del rayo que apunta verticalmente hacia el piso.\n"
-                                        "Define angle_offset_rad = −90° − sentido·ángulo.")
+                self.c_nadir.setToolTip("Ángulo ROS del rayo que apunta perpendicular al piso.\n"
+                                        "Define angle_offset_rad = −90° − sentido·ángulo. Nominal: flecha 0° del S2E\n"
+                                        "al piso = ROS 180°. No se guarda en el yaml: la calibración da el efectivo.")
                 self.c_nadir.valueChanged.connect(self._actualizar_nadir_txt)
                 f.addRow("Rayo hacia abajo (ROS)", self.c_nadir)
                 self.lbl_nadir = QtWidgets.QLabel()
                 self.lbl_nadir.setObjectName("suave")
+                self.lbl_nadir.setWordWrap(True)
                 f.addRow("", self.lbl_nadir)
                 self.c_dir = QtWidgets.QComboBox()
                 self.c_dir.addItems(["+1 (normal)", "−1 (espejado)"])
@@ -591,18 +640,16 @@ class PanelPaso(QtWidgets.QWidget):
                 self.campos[n] = (w, factor)
                 f.addRow(etiqueta, w)
             if grupo == "Montaje":
-                b = QtWidgets.QPushButton("Calibrar con el piso vacío")
-                b.setToolTip("Busca la superficie plana del piso cerca de la dirección «abajo» actual\n"
-                             "y propone H y el ángulo. Con la ROI vacía.")
-                b.clicked.connect(lambda: self.calibrar_piso(
-                    self.v.ros.instantanea()[1],
-                    lambda r: (r - self.proc.p.range_bias_m) * self.proc.p.range_scale))
+                b = QtWidgets.QPushButton("Rutina de calibración…")
+                b.setToolTip("Abre la pestaña «Calibración»: altura, rayo hacia abajo e inclinación\n"
+                             "con el piso vacío, y sentido de avance con un objeto.")
+                b.clicked.connect(lambda: self.v.pestanas.setCurrentWidget(self.v.calib))
                 f.addRow(b)
             lp.addWidget(g)
         fila = QtWidgets.QHBoxLayout()
         for texto, fn, tip in (("Aplicar", self.aplicar, "Usa estos valores ahora (reinicia la máquina de estados)"),
                                ("Guardar en yaml", self.guardar, "Escribe los valores en config/velocity.yaml"),
-                               ("Recargar", self.recargar, "Vuelve a los valores de velocity.yaml")):
+                               ("Recargar", self.recargar, "Vuelve a los valores de velocity.yaml y descarta la calibración aplicada")):
             b = QtWidgets.QPushButton(texto)
             b.setToolTip(tip)
             b.clicked.connect(fn)
@@ -612,14 +659,19 @@ class PanelPaso(QtWidgets.QWidget):
         self.lbl_cambios.setStyleSheet("color: #d29922;")
         lp.addWidget(self.lbl_cambios)
         lp.addStretch(1)
+        # El panel nunca más ancho que el área: sin barra horizontal, el texto se ajusta
+        panel.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
         area = QtWidgets.QScrollArea()
         area.setWidgetResizable(True)
         area.setWidget(panel)
-        area.setMinimumWidth(360)
+        area.setMinimumWidth(290)
         area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         div.addWidget(area)
         div.setStretchFactor(0, 1)
-        div.setSizes([1100, 380])
+        div.setSizes([720, 300])
+        self.b_params.toggled.connect(area.setVisible)
+        self.b_params.setChecked(not pantalla_compacta())   # en 1024 px el plano usa todo el ancho
+        area.setVisible(self.b_params.isChecked())
         raiz.addWidget(div, 1)
         self.params_form = self.params_yaml
         self._pintar_estado(PassState.ARRANQUE, False)
@@ -638,12 +690,22 @@ class PanelPaso(QtWidgets.QWidget):
         self.txt_roi.setText("ROI · franjas ámbar = bordes de entrada y salida")
         self.txt_roi.setAnchor((0, 0))
         self.txt_roi.setPos(p.roi_x_min_m, f - 0.05)
+        # Esquina superior de la ROI hacia donde apunta el sentido positivo (lejos del sensor)
+        self.txt_signo.setText("v > 0  →" if self.signo > 0 else "←  v > 0")
+        self.txt_signo.setAnchor((1, 0) if self.signo > 0 else (0, 0))
+        self.txt_signo.setPos(p.roi_x_max_m - 0.1 if self.signo > 0 else p.roi_x_min_m + 0.1, f + p.roi_z_max_m - 0.05)
         ancho = max(p.roi_x_max_m - p.roi_x_min_m, p.mount_height_m) * 0.75
         cx = 0.5 * (p.roi_x_min_m + p.roi_x_max_m)
         self.g_xz.setRange(xRange=(cx - ancho - 1, cx + ancho + 1), yRange=(f - 0.5, max(p.mount_height_m, p.roi_z_max_m) + 0.8))
-        self.banda.setRegion(((p.pass_v_min_mps - p.pass_v_tolerance_mps) * KMH,
-                              (p.pass_v_max_mps + p.pass_v_tolerance_mps) * KMH))
-        self.g_v.setYRange(-5, (p.pass_v_max_mps + 1.5) * KMH)
+        # Banda de velocidades aceptadas en cada sentido permitido (en la referencia del usuario)
+        lo, hi = (p.pass_v_min_mps - p.pass_v_tolerance_mps) * KMH, (p.pass_v_max_mps + p.pass_v_tolerance_mps) * KMH
+        positivo = self.signo > 0
+        self.banda.setRegion((lo, hi) if positivo or p.pass_both_directions else (-hi, -lo))
+        self.banda2.setRegion((-hi, -lo) if positivo else (lo, hi))
+        self.banda2.setVisible(p.pass_both_directions)
+        tope = (p.pass_v_max_mps + 1.5) * KMH
+        self.g_v.setYRange(-tope if p.pass_both_directions or not positivo else -5,
+                           tope if p.pass_both_directions or positivo else 5)
 
     def _limpiar_grafico_v(self):
         for reg, txt in self.regiones.values():
@@ -656,8 +718,8 @@ class PanelPaso(QtWidgets.QWidget):
     def _pintar_estado(self, estado, abierto):
         nombre, color, desc = ESTADOS[estado]
         self.estado.setText(nombre)
-        self.estado.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {color}; border: 2px solid {color};"
-                                  f"border-radius: 10px; padding: 8px 18px; background: transparent;")
+        self.estado.setStyleSheet(f"font-size: 20px; font-weight: 800; color: {color}; border: 2px solid {color};"
+                                  f"border-radius: 9px; padding: 3px 12px; background: transparent;")
         self.estado_desc.setText(desc)
         listo = estado in (PassState.VACIO, PassState.ENTRANDO, PassState.EN_PASO, PassState.SALIENDO)
         self.listo.setText(f"<b style='color:{'#3fb950' if listo else '#f85149'}'>"
@@ -682,7 +744,8 @@ class PanelPaso(QtWidgets.QWidget):
             return
         scan, est, h = d["ultimo"]
         p = self.proc.p
-        self.k_v.setText(f"{est.velocity_mps * KMH:.1f} km/h" if est.valid else STATUS_TXT[Status(est.status)])
+        sg = self.signo
+        self.k_v.setText(f"{sg * est.velocity_mps * KMH:+.1f} km/h" if est.valid else STATUS_TXT[Status(est.status)])
 
         # Puntos en el plano del pórtico (misma validación y corrección que el estimador)
         r = (validate_ranges(scan.ranges, max(p.range_min_m, scan.range_min), min(p.range_max_m, scan.range_max))
@@ -706,8 +769,8 @@ class PanelPaso(QtWidgets.QWidget):
         if hist and d["t0"] is not None:
             a = np.array([(s - d["t0"], st, v, vf) for s, st, v, vf, _ in hist], dtype=float)
             ok = a[:, 1] == Status.OK
-            self.v_ok.setData(a[ok, 0], a[ok, 2] * KMH)
-            self.v_ema.setData(a[:, 0], np.where(a[:, 1] == Status.NO_OBJECT, np.nan, a[:, 3] * KMH), connect="finite")
+            self.v_ok.setData(a[ok, 0], sg * a[ok, 2] * KMH)
+            self.v_ema.setData(a[:, 0], np.where(a[:, 1] == Status.NO_OBJECT, np.nan, sg * a[:, 3] * KMH), connect="finite")
             t_fin = a[-1, 0]
             self.g_v.setXRange(max(0, t_fin - VENTANA_V_S), max(VENTANA_V_S, t_fin) + 1, padding=0)
             for pid, (reg, txt) in self.regiones.items():
@@ -729,7 +792,7 @@ class PanelPaso(QtWidgets.QWidget):
             self.g_v.addItem(txt)
             self.regiones[ev.pass_id] = (reg, txt)
             self._fila_inicio(ev)
-            self.v._log(f"Paso #{ev.pass_id}: INICIO", "info")
+            self.v._log(f"Paso #{ev.pass_id}: INICIO (sentido {sentido_txt(ev.with_sign(self.signo).direction)})", "info")
             return
         color = (63, 185, 80, 45) if ev.valid else (210, 153, 34, 45)
         if ev.pass_id in self.regiones:
@@ -740,8 +803,9 @@ class PanelPaso(QtWidgets.QWidget):
             txt.setColor("#3fb950" if ev.valid else "#d29922")
         self._fila_fin(ev)
         banderas = ", ".join(BANDERAS_TXT[f] for f in PassFlag if f and f in ev.flags) or "sin banderas"
-        self.v._log(f"Paso #{ev.pass_id}: FIN · {ev.duration_s:.1f} s · v mediana "
-                    f"{ev.v_median_mps * KMH:.1f} km/h · {banderas}", "ok" if ev.valid else "aviso")
+        es = ev.with_sign(self.signo)
+        self.v._log(f"Paso #{ev.pass_id}: FIN · sentido {sentido_txt(es.direction)} · {ev.duration_s:.1f} s · v mediana "
+                    f"{es.v_median_mps * KMH:+.1f} km/h · {banderas}", "ok" if ev.valid else "aviso")
 
     def _item(self, texto, editable=False, color=None):
         it = QtWidgets.QTableWidgetItem(texto)
@@ -757,13 +821,14 @@ class PanelPaso(QtWidgets.QWidget):
         self.tabla.insertRow(f)
         self.filas[ev.pass_id] = f
         self.tabla.setItem(f, 0, self._item(str(ev.pass_id)))
-        self.tabla.setItem(f, 1, self._item(dt.datetime.fromtimestamp(ev.t_start).strftime("%H:%M:%S")))
-        self.tabla.setItem(f, 2, self._item("en curso…", color="#58a6ff"))
-        for c in range(3, 8):
+        self.tabla.setItem(f, C_SENTIDO, self._item(sentido_txt(ev.with_sign(self.signo).direction)))
+        self.tabla.setItem(f, C_INICIO, self._item(dt.datetime.fromtimestamp(ev.t_start).strftime("%H:%M:%S")))
+        self.tabla.setItem(f, C_DUR, self._item("en curso…", color="#58a6ff"))
+        for c in range(C_VMED, C_REF):
             self.tabla.setItem(f, c, self._item(""))
-        self.tabla.setItem(f, 8, self._item("", editable=True))
-        self.tabla.setItem(f, 9, self._item(""))
-        self.tabla.setItem(f, 10, self._item("", editable=True))
+        self.tabla.setItem(f, C_REF, self._item("", editable=True))
+        self.tabla.setItem(f, C_ERR, self._item(""))
+        self.tabla.setItem(f, C_NOTAS, self._item("", editable=True))
         self.tabla.scrollToBottom()
         self.tabla.blockSignals(False)
 
@@ -772,43 +837,55 @@ class PanelPaso(QtWidgets.QWidget):
             self._fila_inicio(ev)
         f = self.filas[ev.pass_id]
         self.tabla.blockSignals(True)
-        km = lambda v: f"{v * KMH:.1f}" if math.isfinite(v) else "—"   # noqa: E731
+        es = ev.with_sign(self.signo)
+        km = lambda v: f"{v * KMH:+.1f}" if math.isfinite(v) else "—"   # noqa: E731
         frac = ev.n_valid / ev.n_scans if ev.n_scans else 0
-        self.tabla.setItem(f, 2, self._item(f"{ev.duration_s:.2f} s"))
-        self.tabla.setItem(f, 3, self._item(f"{km(ev.v_median_mps)} km/h"))
-        self.tabla.setItem(f, 4, self._item(f"{km(ev.v_min_mps)} – {km(ev.v_max_mps)}"))
-        self.tabla.setItem(f, 5, self._item(f"{ev.n_valid}/{ev.n_scans} ({frac:.0%})"))
-        self.tabla.setItem(f, 6, self._item(str(ev.n_gaps)))
+        self.tabla.setItem(f, C_SENTIDO, self._item(sentido_txt(es.direction),
+                                                    color="#3fb950" if es.direction > 0 else "#58a6ff"))
+        self.tabla.setItem(f, C_DUR, self._item(f"{ev.duration_s:.2f} s"))
+        self.tabla.setItem(f, C_VMED, self._item(f"{km(es.v_median_mps)} km/h"))
+        self.tabla.setItem(f, C_VRANGO, self._item(f"{km(es.v_min_mps)} – {km(es.v_max_mps)}"))
+        self.tabla.setItem(f, C_VALIDOS, self._item(f"{ev.n_valid}/{ev.n_scans} ({frac:.0%})"))
+        self.tabla.setItem(f, C_HUECOS, self._item(str(ev.n_gaps)))
         txt = ", ".join(BANDERAS_TXT[x] for x in PassFlag if x and x in ev.flags) or "✓ válido"
-        self.tabla.setItem(f, 7, self._item(txt, color="#3fb950" if ev.valid else "#d29922"))
+        self.tabla.setItem(f, C_BANDERAS, self._item(txt, color="#3fb950" if ev.valid else "#d29922"))
         self.tabla.blockSignals(False)
         self.tabla.resizeColumnsToContents()
         self._error_ref(f)
 
     def _celda_editada(self, it):
-        if it.column() == 8:
+        if it.column() == C_REF:
             self._error_ref(it.row())
 
-    def _evento_de_fila(self, fila):
+    def _evento_de_fila(self, fila, evento="FIN"):
         pid = int(self.tabla.item(fila, 0).text())
-        return next((e for e in reversed(self.eventos_sesion) if e.pass_id == pid and e.event == "FIN"), None)
+        return next((e for e in reversed(self.eventos_sesion) if e.pass_id == pid and e.event == evento), None)
+
+    def _inicio_de_fila(self, fila):
+        return self._evento_de_fila(fila, "INICIO")
 
     def _error_ref(self, fila):
         ev = self._evento_de_fila(fila)
-        it = self.tabla.item(fila, 8)
+        it = self.tabla.item(fila, C_REF)
         txt = it.text().replace(",", ".").strip() if it else ""
         self.tabla.blockSignals(True)
         try:
             ref = float(txt)
-            if ev is None or not math.isfinite(ev.v_median_mps) or ref <= 0:
+            if ev is None or not math.isfinite(ev.v_median_mps) or ref == 0:
                 raise ValueError
-            err = (ev.v_median_mps * KMH - ref) / ref
-            c = "#3fb950" if abs(err) < 0.02 else ("#d29922" if abs(err) < 0.05 else "#f85149")
-            self.tabla.setItem(fila, 9, self._item(f"{err * 100:+.1f} %", color=c))
+            v = ev.with_sign(self.signo).v_median_mps * KMH
+            # Error sobre la rapidez de avance; un signo escrito explícitamente además verifica el sentido
+            avance = ev.advance_median_mps * KMH if math.isfinite(ev.advance_median_mps) else abs(v)
+            err = (avance - abs(ref)) / abs(ref)
+            sentido_mal = txt.startswith(("-", "+")) and (v > 0) != (ref > 0)
+            c = "#f85149" if sentido_mal else (
+                "#3fb950" if abs(err) < 0.02 else ("#d29922" if abs(err) < 0.05 else "#f85149"))
+            self.tabla.setItem(fila, C_ERR, self._item(f"{err * 100:+.1f} %" + (" · sentido ≠" if sentido_mal else ""),
+                                                       color=c))
         except ValueError:
-            self.tabla.setItem(fila, 9, self._item(""))
+            self.tabla.setItem(fila, C_ERR, self._item(""))
         self.tabla.blockSignals(False)
-        self.tabla.resizeColumnToContents(9)
+        self.tabla.resizeColumnToContents(C_ERR)
 
     def _registrar(self, ev: PassEvent):
         """Registro automático de eventos de la sesión (no se pierde aunque se cierre el visor)."""
@@ -817,18 +894,20 @@ class PanelPaso(QtWidgets.QWidget):
             carpeta.mkdir(parents=True, exist_ok=True)
             self.archivo_sesion = carpeta / f"eventos_{dt.datetime.now():%Y%m%d_%H%M%S}.csv"
             with open(self.archivo_sesion, "w", newline="") as fh:
-                csv.writer(fh).writerow(["hora_registro", "pass_id", "evento", "t_start", "t_end", "duracion_s",
+                csv.writer(fh).writerow(["hora_registro", "pass_id", "evento", "sentido", "t_start", "t_end", "duracion_s",
                                          "v_mediana_kmh", "v_min_kmh", "v_max_kmh", "n_escaneos", "n_validos",
-                                         "huecos", "banderas", "ext_inicial", "ext_final", "fuente"])
+                                         "huecos", "banderas", "ext_inicial", "ext_final", "fuente", "positivo_hacia"])
             self.v._log(f"Registro de eventos: {self.archivo_sesion}", "info")
         with open(self.archivo_sesion, "a", newline="") as fh:
             km = lambda v: f"{v * KMH:.3f}" if math.isfinite(v) else ""   # noqa: E731
             ext = lambda e: "" if e is None else f"{e[0]:.2f};{e[1]:.2f}"   # noqa: E731
+            es = ev.with_sign(self.signo)
             csv.writer(fh).writerow([
-                dt.datetime.now().isoformat(timespec="seconds"), ev.pass_id, ev.event, f"{ev.t_start:.3f}",
+                dt.datetime.now().isoformat(timespec="seconds"), ev.pass_id, ev.event, es.direction, f"{ev.t_start:.3f}",
                 f"{ev.t_end:.3f}" if math.isfinite(ev.t_end) else "", f"{ev.duration_s:.3f}" if math.isfinite(ev.duration_s) else "",
-                km(ev.v_median_mps), km(ev.v_min_mps), km(ev.v_max_mps), ev.n_scans, ev.n_valid, ev.n_gaps,
-                "|".join(ev.flags.nombres()), ext(ev.ext_start), ext(ev.ext_end), self.v.fuente.currentText()])
+                km(es.v_median_mps), km(es.v_min_mps), km(es.v_max_mps), ev.n_scans, ev.n_valid, ev.n_gaps,
+                "|".join(ev.flags.nombres()), ext(ev.ext_start), ext(ev.ext_end), self.v.fuente.currentText(),
+                "+x" if self.signo > 0 else "-x"])
 
     def exportar(self):
         if self.tabla.rowCount() == 0:
@@ -845,20 +924,22 @@ class PanelPaso(QtWidgets.QWidget):
             w = csv.writer(fh)
             w.writerow([f"# fuente={self.v.fuente.currentText()}", f"H={p.mount_height_m}",
                         f"abajo_ros_deg={nadir_ros_deg(p):.2f}", f"roi=[{p.roi_x_min_m},{p.roi_x_max_m}]",
-                        f"range_scale={p.range_scale}", f"range_bias_m={p.range_bias_m}"])
-            w.writerow(["pass_id", "inicio", "duracion_s", "v_mediana_kmh", "v_min_kmh", "v_max_kmh", "n_validos",
+                        f"range_scale={p.range_scale}", f"range_bias_m={p.range_bias_m}",
+                        f"positivo_hacia={'+x' if self.signo > 0 else '-x'}"])
+            w.writerow(["pass_id", "sentido", "inicio", "duracion_s", "v_mediana_kmh", "v_min_kmh", "v_max_kmh", "n_validos",
                         "n_escaneos", "huecos", "banderas", "valido", "v_ref_kmh", "error_pct", "notas"])
             for f in range(self.tabla.rowCount()):
                 ev = self._evento_de_fila(f)
                 if ev is None:
                     continue
-                ref = self.tabla.item(f, 8).text().replace(",", ".").strip()
-                err = self.tabla.item(f, 9).text().replace("%", "").strip()
+                ref = self.tabla.item(f, C_REF).text().replace(",", ".").strip()
+                err = self.tabla.item(f, C_ERR).text().split("%")[0].strip()
                 km = lambda v: f"{v * KMH:.3f}" if math.isfinite(v) else ""   # noqa: E731
-                w.writerow([ev.pass_id, dt.datetime.fromtimestamp(ev.t_start).isoformat(timespec="milliseconds"),
-                            f"{ev.duration_s:.3f}", km(ev.v_median_mps), km(ev.v_min_mps), km(ev.v_max_mps),
+                es = ev.with_sign(self.signo)
+                w.writerow([ev.pass_id, es.direction, dt.datetime.fromtimestamp(ev.t_start).isoformat(timespec="milliseconds"),
+                            f"{ev.duration_s:.3f}", km(es.v_median_mps), km(es.v_min_mps), km(es.v_max_mps),
                             ev.n_valid, ev.n_scans, ev.n_gaps, "|".join(ev.flags.nombres()), int(ev.valid),
-                            ref, err, self.tabla.item(f, 10).text()])
+                            ref, err, self.tabla.item(f, C_NOTAS).text()])
         self.v._log(f"Pasos exportados: {ruta}", "ok")
 
     def nueva_sesion(self):

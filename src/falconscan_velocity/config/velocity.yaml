@@ -7,7 +7,10 @@ velocity_node:
   ros__parameters:
     # --- Montaje: plano de escaneo vertical que CONTIENE el eje de avance ---
     mount_height_m: 5.0          # altura del origen óptico sobre el piso  [MEDIR]
-    angle_offset_rad: -1.5707963 # theta = 0 apunta al nadir               [CALIBRAR]
+    # Convención de instalación (2026-10-21): la flecha de 0° del S2E apunta al piso. Con
+    # sllidar_ros2 (inverted:=false) esa flecha es el rayo ROS 180° -> offset = −π/2 − π ≡ +π/2.
+    # Es el valor NOMINAL: la calibración mide el desvío de la flecha y no lo sobrescribe.
+    angle_offset_rad: 1.5707963  # rayo ROS 180° (flecha 0°) apunta al nadir
     angle_direction: 1           # -1 si el sensor está montado invertido  [VERIFICAR]
     x_offset_m: 0.0
     floor_z_m: 0.0
@@ -36,7 +39,7 @@ velocity_node:
 
     # --- Correlación ---
     baseline_scans: 3
-    v_min_mps: -0.5
+    v_min_mps: -6.0              # simétrico con v_max: mide ambos sentidos de paso
     v_max_mps: 6.0
     min_overlap_bins: 60
     min_profile_std_m: 0.05
@@ -58,7 +61,7 @@ velocity_node:
     ema_alpha: 0.4
 
     # --- Máquina de estados de paso (docs/maquina_estados_paso.md) ---
-    # Valores iniciales para 5–15 km/h, 10 Hz y ROI de 6 m; ajustar con pasos reales.
+    # Valores iniciales para 5–10 km/h, 10 Hz y ROI de 6 m; ajustar con pasos reales.
     pass_enter_scans: 3          # ocupados para confirmar entrada (0.3 s)
     pass_exit_scans: 5           # vacíos para cerrar el paso (tolera huecos de 0.4 s)
     pass_empty_scans: 5          # vacíos para salir de ARRANQUE / OBSTRUIDO
@@ -66,10 +69,20 @@ velocity_node:
     scan_timeout_s: 0.5          # sin escaneos -> SIN_DATOS
     pass_edge_margin_m: 1.0      # franja de borde para validar entrada/salida
     pass_v_min_mps: 1.39         # 5 km/h
-    pass_v_max_mps: 4.17         # 15 km/h
+    pass_v_max_mps: 2.78         # 10 km/h (equipo, 2026-10-21: 5–10 km/h para favorecer el escaneo)
     pass_v_tolerance_mps: 0.3
     pass_reverse_v_mps: -0.2     # v OK por debajo cuenta como reversa
     pass_reverse_scans: 3
     pass_min_valid_fraction: 0.6 # provisional: el simulador da 75–80 % de escaneos OK
+    pass_both_directions: true   # el vehículo puede cruzar hacia +x o hacia −x; el sentido va en cada paso
+
+    # --- Calibración con el piso (provisionales hasta caracterizar el S2E en el sitio) ---
+    cal_offset_tol_ok_m: 0.03    # |offset de rango| hasta aquí: «Altura OK»; si no, se corrige
+    cal_offset_tol_max_m: 0.20   # mayor: FALLA, revisar montaje del sensor (equipo, 2026-10-21)
+    cal_angle_tol_ok_rad: 0.0087 # 0.5° de desvío de la flecha 0°: «Rotación OK»
+    cal_angle_tol_max_rad: 0.0873  # 5°: FALLA, soporte flojo o mal instalado
+
+    # --- Referencia de signo de la velocidad publicada (no cambia geometría ni ROI) ---
+    invert_velocity_sign: false  # false: positivo = hacia +x (x mín -> x máx); true: al revés
 
     publish_profile: false

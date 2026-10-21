@@ -37,8 +37,9 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
 from paso import PanelPaso, ReproductorBag, Scan, inspeccionar_bag
+from calibracion import PanelCalibracion
 from comun import (ACENTO, AMBAR, BORDE, FONDO, PANEL, ROJO, TEXTO, TEXTO_SUAVE, VERDE,
-                   ajuste_pared, ros_a_sensor, tarjeta)
+                   ajuste_pared, chip, pantalla_compacta, ros_a_sensor, titulo_grafico)
 
 REPO = Path(__file__).resolve().parents[2]
 DATOS = Path(os.environ.get("FALCONSCAN_DATOS", REPO.parent))
@@ -48,23 +49,24 @@ CALIBRACION_YAML = REPO / "src" / "falconscan_velocity" / "config" / "velocity.y
 
 LIDAR_IP = "192.168.11.2"
 CMD_DRIVER = ["ros2", "launch", "sllidar_ros2", "sllidar_s2e_launch.py", "frame_id:=lidar"]
-CMD_SIM = ["ros2", "run", "falconscan_velocity", "sim_publisher"]
+CMD_SIM = ["ros2", "run", "falconscan_velocity", "sim_publisher",
+           "--ros-args", "-p", "alternate_direction:=true"]   # camiones en ambos sentidos
 
 BUFFER_ESCANEOS = 100      # 10 s a 10 Hz: base del análisis de sector
 SIN_DATOS_S = 2.0          # sin escaneos durante este tiempo -> alerta
 
 
 ESTILO = f"""
-QWidget {{ background: {FONDO}; color: {TEXTO}; font-size: 13px; }}
-QGroupBox {{ background: {PANEL}; border: 1px solid {BORDE}; border-radius: 8px;
-            margin-top: 14px; padding: 10px 8px 8px 8px; font-weight: 600; }}
+QWidget {{ background: {FONDO}; color: {TEXTO}; font-size: 12px; }}
+QGroupBox {{ background: {PANEL}; border: 1px solid {BORDE}; border-radius: 7px;
+            margin-top: 12px; padding: 8px 6px 6px 6px; font-weight: 600; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {ACENTO}; }}
 QLabel {{ background: transparent; }}
 QLabel#valor {{ font-size: 15px; font-weight: 600; }}
-QLabel#grande {{ font-size: 22px; font-weight: 700; color: {ACENTO}; }}
+QLabel#grande {{ font-size: 20px; font-weight: 700; color: {ACENTO}; }}
 QLabel#suave {{ color: {TEXTO_SUAVE}; }}
 QPushButton {{ background: {BORDE}; border: 1px solid #3a4452; border-radius: 6px;
-              padding: 7px 14px; font-weight: 600; }}
+              padding: 6px 10px; min-height: 18px; font-weight: 600; }}
 QPushButton:hover {{ background: #344050; }}
 QPushButton:disabled {{ color: #5a6672; background: #20262e; border-color: #262d36; }}
 QPushButton#iniciar {{ background: #1f6f3a; border-color: #2a8a4a; }}
@@ -74,7 +76,7 @@ QPushButton#detener:hover {{ background: #903333; }}
 QPushButton#grabar:checked {{ background: {ROJO}; border-color: {ROJO}; }}
 QPushButton#congelar:checked {{ background: {AMBAR}; color: #111; border-color: {AMBAR}; }}
 QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{ background: #0f1318; border: 1px solid {BORDE};
-              border-radius: 5px; padding: 4px 6px; }}
+              border-radius: 5px; padding: 3px 5px; min-height: 20px; }}
 QCheckBox {{ background: transparent; spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid #4a5666; border-radius: 4px; background: #0f1318; }}
 QCheckBox::indicator:checked {{ background: {ACENTO}; border-color: {ACENTO}; }}
@@ -85,10 +87,14 @@ QToolTip {{ background: {PANEL}; color: {TEXTO}; border: 1px solid {BORDE}; }}
 QScrollArea {{ border: none; }}
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{ background: {PANEL}; color: {TEXTO_SUAVE}; border: 1px solid {BORDE}; border-bottom: none;
-               border-top-left-radius: 7px; border-top-right-radius: 7px; padding: 7px 18px; margin-right: 3px;
+               border-top-left-radius: 7px; border-top-right-radius: 7px; padding: 5px 14px; margin-right: 3px;
                font-weight: 600; }}
 QTabBar::tab:selected {{ background: #243040; color: {TEXTO}; border-color: {ACENTO}; }}
 QTableWidget QLineEdit {{ padding: 0; }}
+QStatusBar {{ background: {PANEL}; border-top: 1px solid {BORDE}; }}
+QStatusBar::item {{ border: none; }}
+QStatusBar QPushButton {{ padding: 2px 8px; min-height: 14px; font-size: 11px; }}
+QPushButton#registro[alerta="true"] {{ color: {ROJO}; border-color: {ROJO}; }}
 """
 
 
@@ -253,7 +259,7 @@ class Proceso(QtCore.QObject):
 class Insignia(QtWidgets.QLabel):
     def fijar(self, texto: str, color: str):
         self.setText(f"●  {texto}")
-        self.setStyleSheet(f"color: {color}; font-weight: 700; font-size: 14px; padding: 4px 10px;"
+        self.setStyleSheet(f"color: {color}; font-weight: 700; font-size: 12px; padding: 3px 8px;"
                            f"border: 1px solid {color}; border-radius: 12px; background: transparent;")
 
 
@@ -261,7 +267,8 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FalconScan · Visor LiDAR")
-        self.resize(1500, 900)
+        self.resize(1280, 800)
+        self.setMinimumSize(800, 480)
         self.ros = PuenteRos()
         self.driver = Proceso("driver", self)
         self.driver.linea.connect(self._linea_driver)
@@ -307,19 +314,21 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         raiz = QtWidgets.QVBoxLayout(central)
-        raiz.setContentsMargins(12, 10, 12, 10)
-        raiz.setSpacing(8)
+        raiz.setContentsMargins(8, 6, 8, 4)
+        raiz.setSpacing(5)
 
-        # --- barra superior: control + estado
+        # --- barra superior: control + estado (una fila; cabe en 1024 px)
         barra = QtWidgets.QHBoxLayout()
-        titulo = QtWidgets.QLabel("FalconScan  <span style='color:%s;font-weight:400'>Visor LiDAR</span>" % TEXTO_SUAVE)
-        titulo.setStyleSheet("font-size: 19px; font-weight: 700;")
+        barra.setSpacing(5)
+        titulo = QtWidgets.QLabel("FalconScan")
+        titulo.setStyleSheet("font-size: 16px; font-weight: 700;")
+        titulo.setToolTip("Visor LiDAR")
         barra.addWidget(titulo)
-        barra.addSpacing(16)
+        barra.addSpacing(6)
         self.fuente = QtWidgets.QComboBox()
-        self.fuente.addItems(["LiDAR S2E (192.168.11.2)", "Simulador (volquetas)", "Rosbag grabado…"])
-        self.fuente.setToolTip("De dónde vienen los datos. El simulador sirve para probar sin hardware;\n"
-                               "un rosbag grabado permite repetir un paso con otros parámetros.")
+        self.fuente.addItems(["LiDAR S2E", "Simulador", "Rosbag…"])
+        self.fuente.setToolTip(f"De dónde vienen los datos: LiDAR S2E ({LIDAR_IP}), simulador de volquetas\n"
+                               "(probar sin hardware) o un rosbag grabado (repetir un paso con otros parámetros).")
         barra.addWidget(self.fuente)
         self.vel_rep = QtWidgets.QComboBox()
         self.vel_rep.addItems(["1×", "2×", "5×", "máx."])
@@ -328,28 +337,39 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         barra.addWidget(self.vel_rep)
         self.fuente.currentIndexChanged.connect(lambda i: self.vel_rep.setVisible(i == 2))
         self.vel_rep.setVisible(False)
-        self.b_iniciar = QtWidgets.QPushButton("▶  Iniciar lectura", objectName="iniciar")
+        self.b_iniciar = QtWidgets.QPushButton("▶ Iniciar", objectName="iniciar")
         self.b_iniciar.setToolTip("Arranca el driver (gira el motor) y empieza a mostrar /scan  [F5]")
         self.b_iniciar.setShortcut("F5")
-        self.b_detener = QtWidgets.QPushButton("■  Detener", objectName="detener")
+        self.b_detener = QtWidgets.QPushButton("■ Detener", objectName="detener")
         self.b_detener.setToolTip("Detiene el driver y el motor del LiDAR  [F6]")
         self.b_detener.setShortcut("F6")
-        self.b_congelar = QtWidgets.QPushButton("❚❚  Congelar", objectName="congelar", checkable=True)
+        self.b_congelar = QtWidgets.QPushButton("❚❚ Congelar", objectName="congelar", checkable=True)
         self.b_congelar.setToolTip("Congela la imagen para inspeccionarla; el LiDAR sigue leyendo.\n"
                                    "Con un rosbag, además pausa la reproducción.  [Espacio]")
         self.b_congelar.setShortcut("Space")
-        self.b_grabar = QtWidgets.QPushButton("●  Grabar rosbag", objectName="grabar", checkable=True)
-        self.b_grabar.setToolTip(f"Graba /scan en {CARPETA_BAGS}")
-        self.b_captura = QtWidgets.QPushButton("⤓  Captura")
+        self.b_grabar = QtWidgets.QPushButton("● Grabar", objectName="grabar", checkable=True)
+        self.b_grabar.setToolTip(f"Graba /scan como rosbag en {CARPETA_BAGS}")
+        self.b_captura = QtWidgets.QPushButton("⤓ Captura")
         self.b_captura.setToolTip(f"Guarda el escaneo visible (CSV) y una imagen (PNG) en {CARPETA_CAPTURAS}  [Ctrl+S]")
         self.b_captura.setShortcut("Ctrl+S")
         self.b_ayuda = QtWidgets.QPushButton("?")
-        self.b_ayuda.setFixedWidth(36)
+        self.b_ayuda.setFixedWidth(34)
         for b in (self.b_iniciar, self.b_detener, self.b_congelar, self.b_grabar, self.b_captura, self.b_ayuda):
             barra.addWidget(b)
         barra.addStretch(1)
         self.insignia = Insignia()
         barra.addWidget(self.insignia)
+        self.b_pantalla = QtWidgets.QPushButton("⛶")
+        self.b_pantalla.setFixedWidth(34)
+        self.b_pantalla.setToolTip("Pantalla completa  [F11]")
+        self.b_pantalla.setShortcut("F11")
+        self.b_pantalla.clicked.connect(self._pantalla_completa)
+        barra.addWidget(self.b_pantalla)
+        self.b_salir = QtWidgets.QPushButton("✕", objectName="detener")
+        self.b_salir.setFixedWidth(34)
+        self.b_salir.setToolTip("Cerrar el visor (detiene el driver)")
+        self.b_salir.clicked.connect(self.close)
+        barra.addWidget(self.b_salir)
         raiz.addLayout(barra)
 
         self.b_iniciar.clicked.connect(self.iniciar)
@@ -359,41 +379,66 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.b_captura.clicked.connect(self._captura)
         self.b_ayuda.clicked.connect(self._ayuda)
 
-        # --- tarjetas de métricas
-        fila = QtWidgets.QHBoxLayout()
-        fila.setSpacing(8)
-        w, self.m_frec = tarjeta("Frecuencia", tip="Escaneos por segundo según header.stamp (últimos 2 s)")
-        fila.addWidget(w)
-        w, self.m_jitter = tarjeta("σ Δt entre escaneos", tip="Variación del intervalo entre escaneos. Afecta directamente al error de velocidad.")
-        fila.addWidget(w)
-        w, self.m_validos = tarjeta("Rayos válidos", tip="Porcentaje de rayos con distancia válida en el último escaneo (giro completo)")
-        fila.addWidget(w)
-        w, self.m_rango = tarjeta("Rango mín / máx", tip="Distancia mínima y máxima del último escaneo")
-        fila.addWidget(w)
-        w, self.m_cuenta = tarjeta("Escaneos recibidos")
-        fila.addWidget(w)
-        w, self.m_tiempo = tarjeta("Tiempo de lectura")
-        fila.addWidget(w)
-        raiz.addLayout(fila)
-
-        # --- zona central: gráficos + panel lateral
+        # --- zona central: pestañas
         div = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         div.addWidget(self._construir_graficos())
         div.addWidget(self._construir_panel())
         div.setStretchFactor(0, 1)
-        div.setSizes([1100, 380])
+        div.setSizes([720, 300])
         self.pestanas = QtWidgets.QTabWidget()
         self.pestanas.addTab(div, "Sensor")
         self.paso = PanelPaso(self, CALIBRACION_YAML, DATOS)
         self.pestanas.addTab(self.paso, "Prueba de paso")
+        self.calib = PanelCalibracion(self, DATOS)
+        self.pestanas.addTab(self.calib, "Calibración")
         self.pestanas.currentChanged.connect(lambda _: setattr(self, "_ultimo_dibujado", -1))
         raiz.addWidget(self.pestanas, 1)
 
-        # --- registro
+        # --- registro (plegable: en pantalla chica arranca oculto; la última línea va en la barra de estado)
         self.registro = QtWidgets.QPlainTextEdit(readOnly=True)
         self.registro.setMaximumBlockCount(2000)
-        self.registro.setFixedHeight(110)
+        self.registro.setFixedHeight(96)
         raiz.addWidget(self.registro)
+
+        # --- barra de estado: último mensaje + métricas del sensor
+        est = self.statusBar()
+        est.setSizeGripEnabled(False)
+        self.b_registro = QtWidgets.QPushButton("☰ Registro", checkable=True, objectName="registro")
+        self.b_registro.setToolTip("Muestra u oculta el registro de mensajes  [F2]")
+        self.b_registro.setShortcut("F2")
+        self.b_registro.toggled.connect(self._mostrar_registro)
+        est.addWidget(self.b_registro)
+        self.ultimo_log = QtWidgets.QLabel("")
+        self.ultimo_log.setStyleSheet("font-size: 11px;")
+        self.ultimo_log.setMinimumWidth(50)
+        self.ultimo_log.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        est.addWidget(self.ultimo_log, 1)
+        for attr, titulo, tip in (
+                ("m_frec", "Hz", "Escaneos por segundo según header.stamp (últimos 2 s)"),
+                ("m_jitter", "σΔt", "Variación del intervalo entre escaneos. Afecta directamente al error de velocidad."),
+                ("m_validos", "Válidos", "Porcentaje de rayos con distancia válida en el último escaneo (giro completo)"),
+                ("m_rango", "Rango", "Distancia mínima y máxima del último escaneo"),
+                ("m_cuenta", "Escaneos", "Escaneos recibidos"),
+                ("m_tiempo", "Tiempo", "Tiempo de lectura")):
+            w, lbl = chip(titulo, tip)
+            setattr(self, attr, lbl)
+            est.addPermanentWidget(w)
+        self.compacto = pantalla_compacta()
+        self.b_registro.setChecked(not self.compacto)
+        self._mostrar_registro(not self.compacto)
+
+    def _mostrar_registro(self, on):
+        self.registro.setVisible(on)
+        self.ultimo_log.setVisible(not on)
+        self.b_registro.setText("☰ Registro")
+        self.b_registro.setProperty("alerta", False)
+        self.b_registro.style().polish(self.b_registro)
+
+    def _pantalla_completa(self):
+        if self.isFullScreen():
+            self.showMaximized()
+        else:
+            self.showFullScreen()
 
     def _construir_graficos(self) -> QtWidgets.QWidget:
         pg.setConfigOptions(antialias=True, background=PANEL, foreground=TEXTO_SUAVE)
@@ -428,7 +473,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         cont.addWidget(self.vista)
 
         # Ángulo vs distancia
-        self.perfil = pg.PlotWidget(title="<span style='color:%s;font-size:13pt'>Distancia vs ángulo</span>" % TEXTO)
+        self.perfil = pg.PlotWidget(title=titulo_grafico("Distancia vs ángulo"))
         self.perfil.showGrid(x=True, y=True, alpha=0.15)
         self.perfil.setLabel("left", "distancia [m]")
         self.curva = pg.PlotDataItem(pen=pg.mkPen(ACENTO, width=1.4), connect="finite")
@@ -446,7 +491,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.perfil.addItem(self.lbl_cursor_perfil, ignoreBounds=True)
         self.perfil.scene().sigMouseMoved.connect(self._cursor_perfil)
         cont.addWidget(self.perfil)
-        cont.setSizes([560, 300])
+        cont.setSizes([330, 170])
         return cont
 
     def _construir_panel(self) -> QtWidgets.QWidget:
@@ -547,7 +592,8 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         area = QtWidgets.QScrollArea()
         area.setWidgetResizable(True)
         area.setWidget(panel)
-        area.setMinimumWidth(340)
+        area.setMinimumWidth(270)
+        area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return area
 
     # ------------------------------------------------------------------ ciclo de vida
@@ -730,6 +776,12 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         hora = dt.datetime.now().strftime("%H:%M:%S")
         texto = texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self.registro.appendHtml(f"<span style='color:{TEXTO_SUAVE}'>{hora}</span> <span style='color:{color}'>{texto}</span>")
+        self.ultimo_log.setText(f"<span style='color:{TEXTO_SUAVE}'>{hora}</span> <span style='color:{color}'>{texto}</span>")
+        self.ultimo_log.setToolTip(texto)
+        if tipo == "error" and not self.registro.isVisible():
+            self.b_registro.setText("☰ Registro •")
+            self.b_registro.setProperty("alerta", True)
+            self.b_registro.style().polish(self.b_registro)
 
     def _linea_driver(self, l):
         msg = l.split("]: ", 1)[-1].strip()
@@ -822,12 +874,15 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
                                  f"<span style='font-size:11px'>{self.ruta_bag}</span>")
 
         en_paso = self.pestanas.currentIndex() == 1
+        en_calib = self.pestanas.currentWidget() is self.calib
         self.paso.refrescar(congelado=self.b_congelar.isChecked(), dibujar=en_paso)   # eventos siempre
         if ultimo is None or recibidos == self._ultimo_dibujado or self.b_congelar.isChecked():
             return
         self._ultimo_dibujado = recibidos
         self._metricas(buffer, recibidos)
-        if en_paso:
+        if en_calib:
+            self.calib.refrescar(ultimo)
+        if en_paso or en_calib:
             return
 
         r = self._rangos(buffer)
@@ -873,7 +928,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
     @staticmethod
     def _color_metrica(lbl, bien, regular):
         c = VERDE if bien else (AMBAR if regular else ROJO)
-        lbl.setStyleSheet(f"font-size: 17px; font-weight: 700; border: none; color: {c};")
+        lbl.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {c};")
 
     @staticmethod
     def _fmt_t(s):
@@ -1086,7 +1141,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
 
     def _ayuda(self):
         QtWidgets.QMessageBox.information(self, "Cómo usar el visor", f"""
-<b>Iniciar lectura</b> (F5): comprueba que el LiDAR responde, lanza el driver sllidar_ros2 y muestra /scan.
+<b>Iniciar</b> (F5): comprueba que el LiDAR responde, lanza el driver sllidar_ros2 y muestra /scan.
 Si ya hay un driver corriendo en una terminal, el visor se conecta a él sin lanzar otro.<br>
 <b>Detener</b> (F6): para el driver y el motor del LiDAR.<br>
 <b>Congelar</b> (Espacio): fija la imagen para mirarla con calma; los datos siguen llegando.<br><br>
@@ -1102,9 +1157,15 @@ Si escribes la distancia de referencia (cinta), calcula el sesgo.<br>
 <b>Prueba de paso</b> (pestaña): corre el estimador de velocidad y la máquina de estados de paso
 (docs/maquina_estados_paso.md) sobre cada escaneo. Muestra el plano de escaneo con la ROI, el perfil h(x)
 y el objeto detectado; la velocidad en km/h; y una fila por paso con sus banderas de calidad.
-Escribe la velocidad de referencia de cada paso para obtener el error. Antes de probar, ajusta el
-montaje (o usa «Calibrar con el piso vacío») y guarda en velocity.yaml si los valores sirven.
-Con la fuente «Rosbag grabado» se repite un paso con otros parámetros.<br><br>
+Escribe la velocidad de referencia de cada paso para obtener el error.
+Se miden ambos sentidos: el signo de la velocidad y la columna «Sentido» dicen hacia dónde fue cada vehículo
+(por defecto positivo = hacia +x, →). «Invertir referencia» cambia el signo sin reiniciar nada. Antes de probar, ajusta el
+montaje con la pestaña Calibración y guarda en velocity.yaml si los valores sirven.
+Con la fuente «Rosbag grabado» se repite un paso con otros parámetros.<br><br><b>Calibración</b> (pestaña): con la altura medida con cinta y el piso vacío, ajusta la recta del piso y da
+la altura perpendicular, el rayo hacia abajo y la inclinación (sensor + pendiente del piso, compensadas juntas
+porque el vehículo avanza paralelo al piso). Con un objeto del lado de entrada detecta el sentido de avance.
+Guarda en velocity.yaml y deja una ficha en {DATOS / "calibraciones"}.<br><br>
+<b>Pantalla</b>: F11 alterna pantalla completa; F2 muestra el registro (la última línea queda abajo).<br><br>
 Rosbags: {CARPETA_BAGS}<br>Capturas: {CARPETA_CAPTURAS}<br>Pasos: {DATOS / "pruebas_paso"}""")
 
 
@@ -1119,7 +1180,12 @@ def main():
     if icono.exists():
         app.setWindowIcon(QtGui.QIcon(str(icono)))
     win = VentanaPrincipal()
-    win.show()
+    if win.compacto:          # pantalla de 7": sin bordes de ventana ni barra del escritorio
+        win.showFullScreen()
+    else:
+        g = app.primaryScreen().availableGeometry()
+        win.resize(min(1500, g.width()), min(900, g.height()))
+        win.show()
     # rclpy instala sus propios manejadores (solo apagan ROS); cerrar la ventana detiene todo en orden
     signal.signal(signal.SIGINT, lambda *_: win.close())
     signal.signal(signal.SIGTERM, lambda *_: win.close())

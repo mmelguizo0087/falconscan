@@ -6,6 +6,9 @@ materiales reales deben caracterizarse con el sensor (reporte §8).
 
 Modelo:
 - Plano vertical (x, z), piso en z = 0, sensor en (0, H).
+- Ángulos como los publica sllidar_ros2 para un S2E montado con la flecha de 0° hacia el piso:
+  el rayo al nadir es ROS 180° (``nadir_angle_deg``), así que la geometría nominal del yaml
+  (angle_offset_rad = +π/2) vale igual para el simulador y para el sensor real.
 - Volqueta = polígono lateral (cabina + volco con montículo de material).
 - Cada rayo se dispara en su propio instante t_i = stamp + i * time_increment,
   así que el objeto se mueve DURANTE el barrido (distorsión de rotación incluida).
@@ -46,7 +49,8 @@ class LidarSimConfig:
     height_m: float = 5.0
     scan_hz: float = 10.0
     samples_per_rev: int = 3200        # ~RPLIDAR S2E: 32 kS/s a 10 Hz -> 0.1125°
-    sector_deg: tuple[float, float] = (-70.0, 70.0)  # theta respecto al nadir
+    sector_deg: tuple[float, float] = (-70.0, 70.0)  # respecto al nadir
+    nadir_angle_deg: float = 180.0     # ángulo ROS del rayo al nadir (flecha 0° del S2E al piso)
     range_noise_m: float = 0.015
     dropout_prob: float = 0.01
     outlier_prob: float = 0.002
@@ -82,7 +86,8 @@ class LidarSim:
         self.dtheta = 2 * math.pi / c.samples_per_rev
         self.time_increment = 1.0 / (c.scan_hz * c.samples_per_rev)
         a0, a1 = (math.radians(d) for d in c.sector_deg)
-        self.angle_min = a0
+        self.nadir = math.radians(c.nadir_angle_deg)
+        self.angle_min = self.nadir + a0
         self.n_rays = int(round((a1 - a0) / self.dtheta)) + 1
         p = self.truck
         self._seg_p = p
@@ -114,7 +119,7 @@ class LidarSim:
         i = np.arange(self.n_rays)
         theta = self.angle_min + i * self.dtheta
         t_ray = stamp + i * self.time_increment
-        phi = theta - math.pi / 2                     # theta = 0 al nadir
+        phi = theta - self.nadir - math.pi / 2        # el rayo del nadir apunta a −z
         r = self._raycast(phi, motion.x(t_ray))
         r = r + c.range_noise_m * self.rng.standard_normal(r.size)
         r[self.rng.random(r.size) < c.dropout_prob] = np.inf

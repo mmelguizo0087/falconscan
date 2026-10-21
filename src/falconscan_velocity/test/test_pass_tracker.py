@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from falconscan_velocity.core import (PassFlag, PassState, PassTracker, Status, VelocityEstimate,
-                                     VelocityEstimator, VelocityParams)
+                                     VelocityEstimator, VelocityParams, VelocityPipeline)
 from falconscan_velocity.sim import LidarSim, LidarSimConfig, TruckMotion
 
 DT = 0.1
@@ -174,25 +174,24 @@ def test_velocidad_en_el_limite_con_tolerancia_no_es_bandera():
 
 # ----------------------------------------------------------------------------- simulador
 
-def _simular_pasos(velocidades, separacion_s=4.0, cfg=None):
-    """Camiones seguidos por el simulador -> (eventos, ventanas reales de ocupación)."""
-    p = VelocityParams()
+def _simular_pasos(velocidades, separacion_s=4.0, cfg=None, reset_on_empty=False):
+    """Camiones seguidos por el simulador -> (eventos, tracker)."""
+    pipe = VelocityPipeline(VelocityParams(), reset_on_empty=reset_on_empty)
     sim = LidarSim(cfg or LidarSimConfig())
-    est, tr = VelocityEstimator(p), PassTracker(p)
     eventos, t0 = [], 0.0
     for s, _ in sim.run(TruckMotion(x0=100.0, v=0.0), 1.0, t0=t0):   # ROI vacía: sale de ARRANQUE
-        eventos += tr.update_from_estimate(est.process(s))
+        eventos += pipe.process(s)[1]
     t0 = 1.0
     for v in velocidades:
-        dur = 26.5 / v + separacion_s
-        m = TruckMotion(x0=-10.0 - v * t0, v=v)
+        dur = 26.5 / abs(v) + separacion_s
+        m = TruckMotion(x0=(-10.0 if v > 0 else 16.5) - v * t0, v=v)   # v < 0: entra por x máx
         for s, _ in sim.run(m, dur, t0=t0):
-            eventos += tr.update_from_estimate(est.process(s))
+            eventos += pipe.process(s)[1]
         t0 += dur
-    return eventos, tr
+    return eventos, pipe.tracker
 
 
-@pytest.mark.parametrize("v", [1.5, 3.0, 4.0])
+@pytest.mark.parametrize("v", [1.5, 2.2, 2.7])     # 5.4 / 7.9 / 9.7 km/h
 def test_simulador_un_paso_por_camion(v):
     eventos, tr = _simular_pasos([v, v])
     fines = [e for e in eventos if e.event == "FIN"]
@@ -208,3 +207,125 @@ def test_simulador_con_perdida_de_puntos_no_fragmenta():
     eventos, _ = _simular_pasos([2.0], cfg=cfg)
     fines = [e for e in eventos if e.event == "FIN"]
     assert len(fines) == 1, [(e.pass_id, e.flags.nombres()) for e in fines]
+
+
+# ---------------------------------------------------------------- ambos sentidos (D13)
+ENTRA_MAX = (2.2, 3.0)     # aparece por x máx: vehículo hacia −x
+SALE_MIN = (-3.0, -2.4)
+
+
+def pasada_contraria(s, n_medio=30, v=-2.0):
+    return s.ocupado(1, ENTRA_MAX, v).ocupado(n_medio, MEDIO, v).ocupado(1, SALE_MIN, v)
+
+
+def test_paso_en_sentido_contrario_es_valido_con_sentido_negativo():
+    s = pasada_contraria(listo()).vacio(5)
+    ini = [e for e in s.eventos if e.event == "INICIO"]
+    assert ini[0].direction == -1                       # por el borde de x máx
+    (fin,) = s.fines
+    assert fin.valid, fin.flags.nombres()
+    assert fin.direction == -1 and fin.v_median_mps == pytest.approx(-2.0)
+
+
+@pytest.mark.parametrize("secuencia, bandera", [
+    (lambda s: s.ocupado(1, MEDIO, -2.0).ocupado(30, v=-2.0).ocupado(1, SALE_MIN, -2.0), PassFlag.ENTRADA_FUERA_DE_BORDE),
+    (lambda s: s.ocupado(1, ENTRA_MAX, -2.0).ocupado(30, v=-2.0), PassFlag.SALIDA_FUERA_DE_BORDE),
+    (lambda s: s.ocupado(1, ENTRA_MAX, -2.0).ocupado(20, v=-2.0).ocupado(3, MEDIO, v=0.5).ocupado(1, SALE_MIN, -2.0),
+     PassFlag.REVERSA),
+    (lambda s: pasada_contraria(s, v=-0.5), PassFlag.VELOCIDAD_FUERA_DE_RANGO),
+])
+def test_banderas_en_sentido_contrario(secuencia, bandera):
+    s = secuencia(listo()).vacio(5)
+    (fin,) = s.fines
+    assert fin.flags == bandera, fin.flags.nombres()
+
+
+def test_reversa_es_relativa_al_sentido_del_paso():
+    """Hacia −x, velocidades negativas no son reversa (antes de D13 lo eran)."""
+    s = pasada_contraria(listo()).vacio(5)
+    fin = s.fines[0]
+    assert PassFlag.REVERSA not in fin.flags
+    assert fin.advance_median_mps == pytest.approx(2.0)            # rapidez de avance positiva
+
+
+def test_sentido_se_fija_en_la_entrada_y_esta_disponible_durante_el_paso():
+    s = listo().ocupado(1, ENTRA_MAX, -2.0).ocupado(5, MEDIO, -2.0)
+    assert s.tr.open_pass and s.tr.direction == -1
+    assert s.eventos[0].event == "INICIO" and s.eventos[0].direction == -1
+
+
+def test_entra_y_sale_en_reversa_por_el_mismo_lado_es_sentido_inconsistente():
+    """Entra por x mín (+1), avanza poco y sale retrocediendo por x mín."""
+    s = listo().ocupado(1, ENTRA, 1.5).ocupado(3, (-2.5, -1.5), 1.5).ocupado(20, (-2.5, -1.5), -1.5) \
+        .ocupado(1, SALE_MIN, -1.5).vacio(5)
+    (fin,) = s.fines
+    assert fin.direction == 1
+    assert PassFlag.SENTIDO_INCONSISTENTE in fin.flags and PassFlag.REVERSA in fin.flags
+    assert PassFlag.SALIDA_FUERA_DE_BORDE in fin.flags
+    assert fin.advance_median_mps == pytest.approx(-1.5)
+
+
+def test_entrada_ambigua_decide_por_las_primeras_velocidades():
+    s = listo().ocupado(1, MEDIO, -2.0).ocupado(30, v=-2.0).ocupado(1, SALE_MIN, -2.0).vacio(5)
+    ini = [e for e in s.eventos if e.event == "INICIO"][0]
+    (fin,) = s.fines
+    assert ini.direction in (0, -1) and fin.direction == -1
+    assert fin.flags == PassFlag.ENTRADA_FUERA_DE_BORDE
+
+
+def test_un_solo_sentido_marca_el_contrario():
+    s = pasada_contraria(Secuencia(pass_both_directions=False).vacio(5)).vacio(5)
+    (fin,) = s.fines
+    assert fin.direction == 1
+    esperadas = (PassFlag.ENTRADA_FUERA_DE_BORDE | PassFlag.SALIDA_FUERA_DE_BORDE
+                 | PassFlag.VELOCIDAD_FUERA_DE_RANGO | PassFlag.REVERSA)
+    assert fin.flags & esperadas == esperadas
+
+
+def test_sentido_sin_velocidades_sale_del_borde():
+    s = listo().ocupado(1, ENTRA_MAX, status=Status.LOW_PEAK).ocupado(30, status=Status.LOW_PEAK) \
+        .ocupado(1, SALE_MIN, status=Status.LOW_PEAK).vacio(5)
+    assert s.fines[0].direction == -1 and PassFlag.POCOS_VALIDOS in s.fines[0].flags
+
+
+def test_referencia_invertida_cambia_signos_y_no_la_logica():
+    fin = pasada_contraria(listo()).vacio(5).fines[0]
+    ev = fin.with_sign(-1)
+    assert ev.direction == 1 and ev.v_median_mps == pytest.approx(2.0)
+    assert ev.v_min_mps == -fin.v_max_mps and ev.v_max_mps == -fin.v_min_mps
+    assert ev.flags == fin.flags and ev.ext_start == fin.ext_start
+    assert fin.with_sign(1) is fin
+
+
+def test_simulador_ambos_sentidos_seguidos():
+    eventos, tr = _simular_pasos([2.0, -2.0, 2.7, -2.7])
+    fines = [e for e in eventos if e.event == "FIN"]
+    assert [e.direction for e in fines] == [1, -1, 1, -1]
+    assert [e.direction for e in eventos if e.event == "INICIO"] == [1, -1, 1, -1]   # por el borde
+    for e, v in zip(fines, [2.0, -2.0, 2.7, -2.7]):
+        assert e.valid, (e.pass_id, e.flags.nombres())
+        assert e.v_median_mps == pytest.approx(v, rel=0.02)
+    assert tr.n_false_entries == 0
+
+
+# ---------------------------------------------------------------- reinicio del estimador (2026-10-21)
+def test_hueco_dentro_del_paso_no_reinicia_el_estimador():
+    """Con 30 % de pérdidas, mantener el historial en SALIENDO da más escaneos válidos que la
+    política anterior (reiniciar en cada vacío), sin fragmentar el paso."""
+    cfg = LidarSimConfig(dropout_prob=0.30, seed=3)
+    nuevos, _ = _simular_pasos([2.0, -2.0], cfg=cfg)
+    viejos, _ = _simular_pasos([2.0, -2.0], cfg=cfg, reset_on_empty=True)
+    fn, fv = ([e for e in ev if e.event == "FIN"] for ev in (nuevos, viejos))
+    assert len(fn) == 2
+    assert sum(e.n_valid for e in fn) >= sum(e.n_valid for e in fv)
+
+
+def test_estimador_se_reinicia_al_terminar_el_paso():
+    pipe = VelocityPipeline(VelocityParams())
+    sim = LidarSim(LidarSimConfig())
+    for s, _ in sim.run(TruckMotion(x0=100.0, v=0.0), 1.0):
+        pipe.process(s)
+    for s, _ in sim.run(TruckMotion(x0=-10.0 - 2.0, v=2.0), 26.5 / 2.0 + 2.0, t0=1.0):
+        pipe.process(s)
+    assert pipe.tracker.state == PassState.VACIO
+    assert len(pipe.estimator._history) == 0
