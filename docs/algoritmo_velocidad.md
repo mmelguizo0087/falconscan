@@ -29,6 +29,7 @@ Sensor de referencia del simulador: RPLIDAR S2E (inferido del archivo `BOM_MVP_L
 | D7 | Segmentación exige tramos continuos ≥ 5 celdas | §5.5 (continuidad) | Outliers aislados se contaban como objeto. |
 | D8 | Refinamiento subcelda parabólico sobre C(k) | no especificado | Sin él, la resolución de Δs es dx = 2 cm. |
 | D9 | EMA solo para visualización | §5.10 | Con aceleración, el EMA empeora el RMSE de 0.026 a 0.12 m/s por retardo. Para integrar posición/volumen usar `velocity_mps` + `mid_stamp`. |
+| D10 | Un escaneo vacío **se salta sin borrar el historial**; se reinicia solo tras `empty_reset_scans` (5) vacíos seguidos (2026-10-24) | — | Antes cada escaneo vacío (dropout, hueco cabina–volco) reiniciaba y costaba ~0.4 s sin velocidad (vacío + 3 de `WARMING_UP`). Con 10 % de escaneos perdidos: válidos 47 % → 67 %, RMSE 0.023 → 0.020 m/s; el resto de la matriz no cambia. Un hueco largo lo acota `BAD_DT`. |
 
 ## Resultados (simulador, parámetros por defecto)
 
@@ -44,6 +45,7 @@ Errores en m/s. "válidos" = % de escaneos con estimación OK mientras la volque
 | acelera 0.5→3.2 m/s | 73 % | −0.014 | 0.026 | 0.123 | 0.068 |
 | frena 3.0→0.6 m/s | 73 % | −0.012 | 0.024 | 0.074 | 0.055 |
 | pérdida 15 % puntos | 64 % | −0.006 | 0.024 | 0.012 | 0.067 |
+| escaneos perdidos 10 % | 67 % | −0.009 | 0.020 | 0.014 | 0.049 |
 | outliers 1 % | 81 % | −0.006 | 0.033 | 0.017 | 0.200 |
 | ruido rango 3 cm | 71 % | −0.015 | 0.033 | 0.021 | 0.097 |
 | LiDAR 5 Hz | 78 % | −0.004 | 0.010 | 0.006 | 0.026 |

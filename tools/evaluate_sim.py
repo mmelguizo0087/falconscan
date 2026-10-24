@@ -56,6 +56,7 @@ def cases():
     yield "acelera 0.5→3.2 m/s", TruckMotion(position=lambda t: -9.0 + 0.5 * t + 0.3 * t ** 2), 9.0, base
     yield "frena 3.0→0.6 m/s", TruckMotion(position=lambda t: -9.0 + 3.0 * t - 0.3 * t ** 2), 8.0, base
     yield "pérdida 15 % puntos", TruckMotion(v=1.5), 18.0, LidarSimConfig(dropout_prob=0.15)
+    yield "escaneos perdidos 10 %", TruckMotion(v=1.5), 18.0, LidarSimConfig(scan_dropout_prob=0.10)
     yield "outliers 1 %", TruckMotion(v=1.5), 18.0, LidarSimConfig(outlier_prob=0.01)
     yield "ruido rango 3 cm", TruckMotion(v=1.5), 18.0, LidarSimConfig(range_noise_m=0.03)
     yield "LiDAR 5 Hz", TruckMotion(v=1.5), 18.0, LidarSimConfig(scan_hz=5.0, samples_per_rev=6400)

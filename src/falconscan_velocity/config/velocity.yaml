@@ -29,6 +29,7 @@ velocity_node:
     object_h_threshold_m: 0.4
     object_min_bins: 25
     object_min_run_bins: 5
+    empty_reset_scans: 5         # vacíos seguidos para reiniciar el historial; uno aislado se salta
 
     # --- Correlación ---
     baseline_scans: 3

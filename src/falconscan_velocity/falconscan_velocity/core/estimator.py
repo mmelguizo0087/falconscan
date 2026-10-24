@@ -19,7 +19,7 @@ from .scan import Scan, median_filter, validate_ranges
 
 class Status(IntEnum):
     OK = 0
-    NO_OBJECT = 1         # no hay objeto en la ROI (o se acaba de perder)
+    NO_OBJECT = 1         # escaneo sin objeto en la ROI (se salta sin borrar el historial)
     WARMING_UP = 2        # aún no hay perfil de referencia
     BAD_DT = 3            # Δt <= 0 o demasiado grande
     LOW_OVERLAP = 4       # pocos puntos válidos en común / sin variación
@@ -52,6 +52,7 @@ class VelocityParams:
     object_h_threshold_m: float = 0.4
     object_min_bins: int = 25
     object_min_run_bins: int = 5       # tramo continuo mínimo (10 cm con dx = 2 cm)
+    empty_reset_scans: int = 5         # escaneos vacíos SEGUIDOS para reiniciar el historial (objeto ido)
     # --- Correlación ---
     baseline_scans: int = 3            # comparar con el escaneo de hace N (Δt mayor = menos ruido en v)
     v_min_mps: float = -0.5
@@ -127,6 +128,7 @@ class VelocityEstimator:
         self._history: deque[_Frame] = deque(maxlen=max(1, self.p.baseline_scans) + 1)
         self._last_valid: tuple[float, float] | None = None  # (stamp, v)
         self._v_filt = float("nan")
+        self._n_empty = 0                 # escaneos vacíos consecutivos
         self.last_profile: np.ndarray | None = None
         self.last_correlation: CorrelationResult | None = None
 
@@ -135,6 +137,7 @@ class VelocityEstimator:
         self._history.clear()
         self._last_valid = None
         self._v_filt = float("nan")
+        self._n_empty = 0
 
     def _frame_from_scan(self, scan: Scan) -> _Frame:
         p = self.p
@@ -171,8 +174,15 @@ class VelocityEstimator:
         out = VelocityEstimate(stamp=scan.stamp, status=Status.NO_OBJECT)
 
         if int(mask.sum()) < p.object_min_bins:
-            self.reset()
+            # Un escaneo vacío aislado (dropout, hueco cabina–volco) se salta sin borrar el
+            # historial: el siguiente escaneo con objeto se compara con la referencia guardada
+            # (Δt algo mayor) y no vuelve a WARMING_UP. Solo se reinicia cuando el objeto se fue.
+            # Un hueco largo lo acota igual la verificación BAD_DT.
+            self._n_empty += 1
+            if self._n_empty >= p.empty_reset_scans:
+                self.reset()
             return out
+        self._n_empty = 0
         out.object_extent = object_extent(h, self._grid, p.object_h_threshold_m, p.object_min_run_bins)
 
         self._history.append(frame)

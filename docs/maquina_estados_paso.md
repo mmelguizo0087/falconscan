@@ -545,11 +545,12 @@ el soporte.
 
 ## Cambio de `reset()` del estimador (va con la máquina de operación)
 
-Hoy `VelocityEstimator.reset()` se llama en cada escaneo vacío. Con el tracker, el reinicio
-será solo en FIN; en `SALIENDO` los escaneos vacíos se saltan sin borrar el historial (la
-verificación `BAD_DT` existente acota los huecos largos). **Decidido el 2026-10-21:** entra en
-la misma implementación que `PassTracker`. Igual se reporta en la evaluación cuánto cambia la
-fragmentación de pasos.
+**Implementado el 2026-10-24 (adelantado, antes del tracker):** un escaneo vacío se salta sin
+borrar el historial ni volver a `WARMING_UP`; `VelocityEstimator.reset()` solo se llama tras
+`empty_reset_scans` (5) vacíos seguidos, y la verificación `BAD_DT` acota los huecos largos.
+Ver D10 en `docs/algoritmo_velocidad.md`. Con el tracker, el reinicio pasará a hacerse en FIN
+(`empty_reset_scans` = `pass_exit_scans`, ambos 5, para que coincidan mientras tanto). Igual se
+reporta en la evaluación cuánto cambia la fragmentación de pasos.
 
 ## Decisiones
 

@@ -50,6 +50,7 @@ class LidarSimConfig:
     range_noise_m: float = 0.015
     dropout_prob: float = 0.01
     outlier_prob: float = 0.002
+    scan_dropout_prob: float = 0.0     # escaneo completo perdido (todos los rangos inválidos)
     range_max_m: float = 30.0
     seed: int = 1
 
@@ -121,6 +122,8 @@ class LidarSim:
         out = self.rng.random(r.size) < c.outlier_prob
         r[out] = self.rng.uniform(0.3, 8.0, out.sum())
         r[r > c.range_max_m] = np.inf
+        if c.scan_dropout_prob and self.rng.random() < c.scan_dropout_prob:
+            r[:] = np.inf
         return Scan(stamp=stamp, angle_min=self.angle_min, angle_increment=self.dtheta,
                     ranges=r.astype(np.float32), time_increment=self.time_increment,
                     range_min=0.05, range_max=c.range_max_m)
