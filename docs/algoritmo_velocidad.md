@@ -29,11 +29,16 @@ Sensor de referencia del simulador: RPLIDAR S2E (inferido del archivo `BOM_MVP_L
 | D7 | Segmentación exige tramos continuos ≥ 5 celdas | §5.5 (continuidad) | Outliers aislados se contaban como objeto. |
 | D8 | Refinamiento subcelda parabólico sobre C(k) | no especificado | Sin él, la resolución de Δs es dx = 2 cm. |
 | D9 | EMA solo para visualización | §5.10 | Con aceleración, el EMA empeora el RMSE de 0.026 a 0.12 m/s por retardo. Para integrar posición/volumen usar `velocity_mps` + `mid_stamp`. |
+| D11 | Búsqueda de la correlación **simétrica** `[−v_max, v_max]` (`search_mode = "simetrica"`, 2026-10-24) | — | La búsqueda original `[−0.5, 6]` m/s no ve camiones en −x (0–4 % de válidos). Medido con estimador + PassTracker en los dos sentidos: "simetrica" y "sentido" (búsqueda según el sentido del paso) dan la misma exactitud (±0.01 m/s), pero "sentido" pierde la reversa más rápida que −0.5 m/s (caso "frena": 73 % de válidos frente a 92 %) y el volumen necesita medir la reversa para restarla. Costo: +1.2 ms/escaneo. Las tres opciones quedan en `search_mode` para ablación. |
+| D12 | `object_extent` devuelve los **centros** de las celdas extremas (2026-10-24) | — | El borde real cae dentro de la celda extrema; con los bordes de celda el largo salía +1 celda (2 cm). Lo usa el volumen para ubicar frente y cola (+0.3 % de volumen). No cambia la velocidad. |
 | D10 | Un escaneo vacío **se salta sin borrar el historial**; se reinicia solo tras `empty_reset_scans` (5) vacíos seguidos (2026-10-24) | — | Antes cada escaneo vacío (dropout, hueco cabina–volco) reiniciaba y costaba ~0.4 s sin velocidad (vacío + 3 de `WARMING_UP`). Con 10 % de escaneos perdidos: válidos 47 % → 67 %, RMSE 0.023 → 0.020 m/s; el resto de la matriz no cambia. Un hueco largo lo acota `BAD_DT`. |
 
 ## Resultados (simulador, parámetros por defecto)
 
 Errores en m/s. "válidos" = % de escaneos con estimación OK mientras la volqueta está en la ROI.
+Desde el 2026-10-24 `tools/evaluate_sim.py` corre estimador + PassTracker (como el nodo) y
+cada caso en los dos sentidos; la tabla muestra +x, y en −x los resultados son iguales salvo el
+signo (p. ej. 1.5 m/s: 80 %, sesgo +0.008, RMSE 0.025). Cada caso produce exactamente un paso.
 
 | caso | válidos | sesgo | RMSE | RMSE EMA | máx |
 |------|--------:|------:|-----:|---------:|----:|

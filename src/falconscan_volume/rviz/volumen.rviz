@@ -1,0 +1,91 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Piso
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Cell Size: 1
+      Plane Cell Count: 24
+      Color: 160; 160; 164
+      Alpha: 0.4
+    - Class: rviz_default_plugins/Axes
+      Name: Marco del paso (frente en x = 0)
+      Enabled: true
+      Length: 0.6
+      Radius: 0.03
+      Reference Frame: falconscan_paso
+    - Class: rviz_default_plugins/Marker
+      Name: Superficie (medición final)
+      Enabled: true
+      Namespaces:
+        volumen: true
+      Topic:
+        Value: /volume/surface
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Nube del paso
+      Enabled: true
+      Topic:
+        Value: /volume/cloud
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Use rainbow: true
+      Autocompute Intensity Bounds: false
+      Min Intensity: 0
+      Max Intensity: 3.5
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Perfil transversal en vivo
+      Enabled: true
+      Topic:
+        Value: /volume/section
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 255; 60; 60
+      Decay Time: 0
+  Enabled: true
+  Global Options:
+    Background Color: 30; 30; 34
+    Fixed Frame: falconscan_paso
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 16
+      Focal Point:
+        X: -3.5
+        Y: 0
+        Z: 1
+      Pitch: 0.45
+      Yaw: 3.9
+      Name: Current View
+      Target Frame: <Fixed Frame>
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1500

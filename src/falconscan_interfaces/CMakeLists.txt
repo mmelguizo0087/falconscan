@@ -8,6 +8,10 @@ find_package(builtin_interfaces REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/VelocityEstimate.msg"
+  "msg/PassEvent.msg"
+  "msg/PassState.msg"
+  "msg/VolumeState.msg"
+  "msg/VolumeMeasurement.msg"
   DEPENDENCIES std_msgs builtin_interfaces
 )
 

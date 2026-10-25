@@ -1,4 +1,4 @@
-"""config/velocity.yaml debe tener exactamente los parámetros de VelocityParams, con el tipo correcto."""
+"""config/falconscan.yaml (sección velocity_node) debe tener exactamente los parámetros de VelocityParams, con el tipo correcto."""
 from pathlib import Path
 
 import pytest
@@ -6,7 +6,7 @@ import pytest
 from falconscan_velocity.core import VelocityParams
 
 yaml = pytest.importorskip("yaml")
-CFG = Path(__file__).resolve().parents[1] / "config" / "velocity.yaml"
+CFG = Path(__file__).resolve().parents[1] / "config" / "falconscan.yaml"
 
 
 def test_yaml_matches_params():

@@ -16,7 +16,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
-    cfg = os.path.join(get_package_share_directory("falconscan_velocity"), "config", "velocity.yaml")
+    cfg = os.path.join(get_package_share_directory("falconscan_velocity"), "config", "falconscan.yaml")
     use_sim = LaunchConfiguration("use_sim")
     scan_topic = LaunchConfiguration("scan_topic")
     return LaunchDescription([

@@ -1,4 +1,4 @@
-# Máquinas de estados: calibración y operación (propuesta, sin implementar)
+# Máquinas de estados: calibración y operación
 
 El sistema funciona en dos fases, cada una con su propia máquina de estados:
 
@@ -14,7 +14,12 @@ Estado:
 - **2026-10-20:** máquina de operación aprobada en estados y salidas.
 - **2026-10-21:** se agrega la máquina de calibración, se limita la velocidad de paso a
   **5–10 km/h** y la operación pasa a ser bidireccional. Las decisiones del usuario están en
-  «Decisiones». **Diseño listo para implementar**, salvo los puntos de «Pendiente de decidir».
+  «Decisiones».
+- **2026-10-24:** **máquina de operación IMPLEMENTADA** (`core/pass_tracker.py`: `PassTracker`
+  y `VelocityPipeline`; publicada por `velocity_node` en `/pass_state` y `/pass_event`). La
+  búsqueda de la correlación quedó **simétrica** (medido; ver D11 en `algoritmo_velocidad.md`).
+  La **calibración y el supervisor siguen sin implementar**: los nodos operan con la geometría
+  del archivo de parámetros (`config/falconscan.yaml`) y T13/T14 no existen todavía.
 
 ## Supervisor (nivel superior)
 
@@ -221,7 +226,7 @@ Cómo se usa la calibración en operación:
 
 ### Parámetros de calibración
 
-Se agregan a `config/velocity.yaml`, siguiendo la convención del repo (floats con punto
+Se agregarán a `config/falconscan.yaml`, siguiendo la convención del repo (floats con punto
 decimal, con prueba de correspondencia).
 
 | Parámetro | Defecto | Unidad | Justificación del valor inicial |
@@ -297,7 +302,7 @@ Mantiene la lógica aprobada el 2026-10-20. Cambian tres cosas:
 |---|---|---|
 | Velocidad de paso | **5–10 km/h = 1.39–2.78 m/s** | Equipo (2026-10-21). Se limita para favorecer el escaneo |
 | Frecuencia de escaneo | 10 Hz (Δt = 0.1 s) | S2E medido: ~10.7 Hz |
-| Largo de la ROI | 6.0 m (`roi_x_min_m = -3`, `roi_x_max_m = 3`) | `config/velocity.yaml` |
+| Largo de la ROI | 6.0 m (`roi_x_min_m = -3`, `roi_x_max_m = 3`) | `config/falconscan.yaml` |
 | Largo del camión | 7.5 m (simulador) … ~10 m (doble troque) | `sim/lidar_sim.py`; **medir** |
 | Sentido de circulación | **cualquiera** (+x o −x); se determina en cada paso | Equipo (2026-10-21) |
 | Un camión a la vez | sí | Acuerdos del MVP |
@@ -331,8 +336,9 @@ Con el sentido fijo se define la **rapidez de avance** de cada escaneo:
   avance y el Δx del volumen saldría inflado.
 - El LiDAR de volumen integra `Δx = sentido · displacement_m`, así que una reversa resta.
 
-**El sentido también se le pasa al estimador**, para que la correlación busque en el sentido
-correcto:
+**El sentido también se le pasa al estimador** (implementado en `VelocityPipeline`). Cómo se usa
+depende de `search_mode`; quedó **"simetrica"** por defecto (decisión del 2026-10-24, abajo).
+Propuesta original:
 - Hoy la búsqueda es asimétrica: `v ∈ [v_min_mps, v_max_mps] = [−0.5, 6.0]` m/s. Un camión que
   entra por `x_max` (v ≈ −2 m/s) queda **fuera de la búsqueda**: el estimador daría
   `AT_SEARCH_LIMIT` o un pico falso.
@@ -370,7 +376,7 @@ Variables:
 - Paso: `pass_id`, `sentido`, `ext_inicial`, `ext_final`.
 - Acumuladores de calidad: n escaneos, n OK, velocidades OK (con signo), n huecos, n reversa.
 
-### Parámetros (modificables en `config/velocity.yaml`)
+### Parámetros (modificables en `config/falconscan.yaml`, sección `velocity_node`)
 
 Se agregan a `VelocityParams` **y** al YAML (floats con punto decimal).
 
@@ -575,10 +581,16 @@ reporta en la evaluación cuánto cambia la fragmentación de pasos.
   lado de entrada. Con esto deja de importar el sentido de giro del sensor y no hace falta una
   segunda marca de instalación.
 
+- **2026-10-24:** búsqueda de la correlación **simétrica** `[−v_max, v_max]`. Medido en
+  simulación en los dos sentidos: misma exactitud que la búsqueda según el sentido, sin
+  aumento de picos falsos, y sí mide la reversa (que el volumen necesita restar). Queda
+  `search_mode` ("simetrica" | "sentido" | "fija") para ablación.
+- **2026-10-24:** `PassTracker` implementado antes que la calibración (el volumen depende de
+  él). El reinicio del estimador se hace en FIN; `empty_reset_scans` sigue como respaldo.
+
 ## Pendiente de decidir
 
-1. Búsqueda de la correlación: **propuesta, según el sentido del paso** (mismo ancho que hoy),
-   o simplemente simétrica `[−6, 6]` m/s siempre (más simple, pero duplica las posiciones
-   candidatas y con ello el riesgo de picos falsos). Se decide con la medición en simulación.
-2. Los umbrales de calibración (`cal_offset_tol_*`, `cal_angle_tol_*`, `cal_floor_*`) son
+1. ~~Búsqueda de la correlación~~ → decidido el 2026-10-24 (simétrica).
+2. Implementar la máquina de calibración y el supervisor (compartidos con el LiDAR de volumen).
+3. Los umbrales de calibración (`cal_offset_tol_*`, `cal_angle_tol_*`, `cal_floor_*`) son
    provisionales hasta caracterizar el S2E real en el sitio.

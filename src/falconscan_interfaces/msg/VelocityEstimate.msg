@@ -34,3 +34,8 @@ uint32 n_overlap
 # Extensión del objeto en la ROI [m, eje de avance]; NaN si no hay objeto
 float32 object_x_start_m
 float32 object_x_end_m
+
+# Paso de camión (PassTracker)
+uint32 pass_id                       # 0 si no hay paso abierto
+int8 direction                       # +1 / -1 del paso; 0 si no se conoce
+float64 advance_mps                  # direction · velocity_mps (rapidez de avance); NaN si no es válida

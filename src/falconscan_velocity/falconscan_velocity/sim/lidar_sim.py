@@ -51,13 +51,17 @@ class LidarSimConfig:
     dropout_prob: float = 0.01
     outlier_prob: float = 0.002
     scan_dropout_prob: float = 0.0     # escaneo completo perdido (todos los rangos inválidos)
+    direction: int = 1                 # -1: la volqueta circula hacia -x (contorno espejado)
     range_max_m: float = 30.0
     seed: int = 1
 
 
 @dataclass
 class TruckMotion:
-    """Posición del frente de la volqueta en x(t). Por defecto velocidad constante."""
+    """Posición del frente de la volqueta en x(t). Por defecto velocidad constante.
+
+    Para circular hacia -x: ``LidarSimConfig(direction=-1)`` y, p. ej., ``TruckMotion(x0=10, v=-1.5)``.
+    """
 
     x0: float = -10.0
     v: float = 1.5
@@ -85,7 +89,7 @@ class LidarSim:
         a0, a1 = (math.radians(d) for d in c.sector_deg)
         self.angle_min = a0
         self.n_rays = int(round((a1 - a0) / self.dtheta)) + 1
-        p = self.truck
+        p = self.truck if c.direction >= 0 else self.truck * np.array([-1.0, 1.0])
         self._seg_p = p
         self._seg_q = np.roll(p, -1, axis=0)
 

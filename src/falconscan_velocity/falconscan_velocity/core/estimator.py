@@ -55,8 +55,9 @@ class VelocityParams:
     empty_reset_scans: int = 5         # escaneos vacíos SEGUIDOS para reiniciar el historial (objeto ido)
     # --- Correlación ---
     baseline_scans: int = 3            # comparar con el escaneo de hace N (Δt mayor = menos ruido en v)
-    v_min_mps: float = -0.5
+    v_min_mps: float = -0.5            # con search_mode = "sentido"/"fija" (ver _search_range)
     v_max_mps: float = 6.0
+    search_mode: str = "simetrica"     # "simetrica" | "sentido" | "fija" (ver _search_range)
     min_overlap_bins: int = 60
     min_profile_std_m: float = 0.05
     peak_exclusion_bins: int = 3
@@ -69,6 +70,19 @@ class VelocityParams:
     accel_margin_mps: float = 0.3
     # --- Filtro temporal (EMA sobre v ya estimada, reporte §5.10) ---
     ema_alpha: float = 0.4
+    # --- Paso de camión (PassTracker, docs/maquina_estados_paso.md §2) ---
+    pass_enter_scans: int = 3          # escaneos ocupados para confirmar la entrada
+    pass_exit_scans: int = 5           # escaneos vacíos para confirmar la salida
+    pass_empty_scans: int = 5          # escaneos vacíos para salir de ARRANQUE / OBSTRUIDO
+    pass_max_s: float = 30.0           # duración máxima de un paso -> TIMEOUT
+    scan_timeout_s: float = 0.5        # sin escaneos -> SIN_DATOS
+    pass_edge_margin_m: float = 1.0    # franja de borde de la ROI para entrada/salida
+    pass_v_min_mps: float = 1.39       # 5 km/h
+    pass_v_max_mps: float = 2.78       # 10 km/h
+    pass_v_tolerance_mps: float = 0.3
+    pass_reverse_v_mps: float = -0.2   # v_avance por debajo = reversa
+    pass_reverse_scans: int = 3
+    pass_min_valid_fraction: float = 0.6
 
     @classmethod
     def field_names(cls) -> list[str]:
@@ -129,6 +143,7 @@ class VelocityEstimator:
         self._last_valid: tuple[float, float] | None = None  # (stamp, v)
         self._v_filt = float("nan")
         self._n_empty = 0                 # escaneos vacíos consecutivos
+        self._direction = 0               # sentido del paso (+1/-1); 0 = desconocido
         self.last_profile: np.ndarray | None = None
         self.last_correlation: CorrelationResult | None = None
 
@@ -138,6 +153,27 @@ class VelocityEstimator:
         self._last_valid = None
         self._v_filt = float("nan")
         self._n_empty = 0
+
+    def set_direction(self, direction: int) -> None:
+        """Sentido del paso en curso (+1 / -1), o 0 si no se conoce. Lo fija el PassTracker."""
+        self._direction = int(np.sign(direction))
+
+    def _search_range(self) -> tuple[float, float]:
+        """Rango de velocidades [m/s] en el que se busca el pico de correlación.
+
+        - "fija": [v_min, v_max] en el marco x del sensor (comportamiento original; no ve
+          camiones en -x).
+        - "simetrica": [-v_max, v_max] siempre.
+        - "sentido": sentido · [v_min, v_max] con el sentido del paso; simétrico mientras no
+          se conozca. Mismo ancho que "fija" una vez conocido.
+        """
+        p = self.p
+        if p.search_mode == "fija":
+            return p.v_min_mps, p.v_max_mps
+        if p.search_mode == "sentido" and self._direction != 0:
+            lo, hi = self._direction * p.v_min_mps, self._direction * p.v_max_mps
+            return min(lo, hi), max(lo, hi)
+        return -p.v_max_mps, p.v_max_mps
 
     def _frame_from_scan(self, scan: Scan) -> _Frame:
         p = self.p
@@ -202,8 +238,9 @@ class VelocityEstimator:
             return out
 
         dx = self._grid.dx
-        k_min = math.floor(p.v_min_mps * dt / dx) - 1
-        k_max = math.ceil(p.v_max_mps * dt / dx) + 1
+        v_lo, v_hi = self._search_range()
+        k_min = math.floor(v_lo * dt / dx) - 1
+        k_max = math.ceil(v_hi * dt / dx) + 1
         deskew = p.deskew_iterations > 0 and bool(np.any(frame.tau > 0))
         n_pass = 1 + p.deskew_iterations if deskew else 1
         v_pass = v_hint if deskew else 0.0
