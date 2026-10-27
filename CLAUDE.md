@@ -17,7 +17,21 @@ el volumen de material del volco.
     volumen.** El volumen de material (separar el volco y restar la tara) es la etapa siguiente.
 - Sensor de referencia: RPLIDAR S2E (dToF, 10 Hz), inferido del BOM. Verificar con la hoja de datos.
 - Hardware MVP: Raspberry Pi 5 (4 GB), HMI Nextion, alimentación 110–220 V, exportación a SD.
-- Software: ROS 2 (objetivo: Jazzy sobre Ubuntu 24.04), nodos en Python.
+- Software: ROS 2 (objetivo: Jazzy sobre Ubuntu 24.04), nodos en Python. La RPi de desarrollo
+  corre ROS 2 **Lyrical** sobre Ubuntu 26.04 (Python 3.14): compila igual con
+  `colcon build --symlink-install`; el driver `sllidar_ros2` va en su propio workspace
+  (`../lidar_ws`, con el CMakeLists ajustado a Lyrical).
+
+## Estado del hardware (2026-10-27)
+
+- **S2E unidad 1** (S/N 508BFA92…, 192.168.11.2:8089, PC/RPi en 192.168.11.100/24): funciona.
+  Caracterizada con prueba de pared (D11: escala 0.995753, sesgo 2.7 mm) y calibración con el
+  piso a H = 2.216 m (desvío de la flecha −1.3°). Es la que está configurada en `velocity_node`.
+- **S2E unidad 2:** defectuosa (no responde ARP/ping/SDK; diagnóstico del 2026-10-19). Hasta
+  repararla o reemplazarla no hay segundo LiDAR para el volumen.
+- **RPLIDAR A1M8** (USB, banco del LiDAR de volumen): el motor gira pero no envía datos.
+- `sllidar_ros2` con `inverted:=false` publica los rayos en orden inverso al de medición
+  (`scan_time_reversed: true`, D10) y el ángulo ROS = 180° − marca del sensor.
 
 ## Acuerdos del MVP (Notion, "acuerdos")
 
@@ -67,8 +81,16 @@ src/falconscan_interfaces/      mensajes (VelocityEstimate, PassEvent, PassState
 tools/evaluate_sim.py           matriz de ensayos de velocidad en simulación (ablación)
 tools/evaluate_passes.py        pasos en simulación: camiones en ambos sentidos, escaneos ciegos, fragmentación
 tools/evaluate_volume_sim.py    matriz de ensayos de volumen (simulador 3D)
-tools/visor_lidar/              GUI de pruebas (PyQt6 + pyqtgraph): sensor en vivo, prueba de paso,
-                                calibración de montaje, volumen 3D, rosbags; `instalar.sh` crea el acceso directo
+tools/visor_lidar/              GUI de pruebas (PyQt6 + pyqtgraph; apt: python3-pyqt6 python3-pyqtgraph
+                                python3-opengl). `instalar.sh` crea el acceso directo y avisa dependencias
+  visor_lidar.py                ventana, fuentes (S2E / simulador / rosbag), pestaña «Sensor», grabación
+  paso.py                       «Prueba de paso»: estimador + PassTracker en el visor; «Guardar en yaml»
+                                escribe SOLO la sección velocity_node
+  calibracion.py                «Calibración»: piso vacío con H de cinta (core/calibration.py)
+  volumen.py                    «Volumen 3D»: VelocityPipeline + VolumeReconstructor en el visor; nube y
+                                superficie 3D, vista superior, A(x), perfil transversal, mediciones, PLY/JSON
+  sim_volumen.py                genera (en paralelo) y guarda un paso del simulador 3D para «Volumen 3D»;
+                                los escenarios son los de tools/evaluate_volume_sim.py
 docs/algoritmo_velocidad.md     decisiones de diseño + resultados + pendientes
 docs/maquina_estados_paso.md    máquinas de calibración (pendiente) y operación (PassTracker, implementada)
 docs/maquina_estados_volumen.md reconstructor de volumen: estados, chequeos, parámetros, resultados
@@ -80,7 +102,7 @@ docs/referencias/               reporte técnico original del método
 ```bash
 # Pruebas (sin ROS)
 cd src/falconscan_velocity && python3 -m pytest -q test
-cd src/falconscan_volume && python3 -m pytest -q test      # ~1–2 min (simulador 3D)
+cd src/falconscan_volume && python3 -m pytest -q test      # ~1–2 min en PC, ~4 min en la RPi
 
 # Matriz de ensayos en simulación; --set para ablación
 python3 tools/evaluate_sim.py
@@ -103,7 +125,14 @@ ros2 topic echo /volume/measurement
 ros2 launch falconscan_volume volume_lidar.launch.py lidar:=a1 rviz:=true
 # Visor de pruebas (en la RPi también hay acceso directo en el escritorio)
 tools/visor_lidar/visor_lidar.sh
+# Paso del simulador 3D para el visor, sin GUI (escenarios: --lista)
+python3 tools/visor_lidar/sim_volumen.py --caso "10 km/h +x" --salida /tmp/paso.npz
 ```
+
+En la RPi el simulador 3D del pórtico cuesta ~1 s por escaneo: `volume_sim.launch.py` no llega a
+10 Hz (se usa en un PC). Para ver el volumen en la RPi, la pestaña «Volumen 3D» genera el
+escenario una vez (en caché) y lo reproduce. Si `colcon build` falla por un `velocity.yaml` que
+ya no existe, borrar el enlace viejo en `build/falconscan_velocity/config/`.
 
 ## Convenciones (respetarlas)
 
@@ -125,6 +154,11 @@ tools/visor_lidar/visor_lidar.sh
   la calibración da valores efectivos (offset de rango, rayo hacia abajo) y no sobrescribe el yaml.
   El yaml es el del sensor FÍSICO (H de la cinta, rayos invertidos de sllidar_ros2, calibración de
   la unidad 1); con los simuladores los launch aplican `SIM_VELOCITY_OVERRIDES` (`falconscan_velocity/sim`).
+- **Pasos de camión:** `PassEvent.v_*` es la rapidez de avance (sentido · v, positiva en los dos
+  sentidos); `flags` es una lista de nombres (vacía = válido); `n_scans`/`n_valid` cuentan solo
+  escaneos ocupados, desde ENTRANDO (D21).
+- **Decisiones de diseño:** cada una lleva un número D en `docs/algoritmo_velocidad.md`. Antes de
+  numerar una nueva, hacer pull y tomar el siguiente libre (hoy D22): dos ramas ya chocaron en D10–D12.
 - **Para integrar posición o volumen** integrar `velocity_mps` en `mid_stamp` (header.stamp del
   mensaje), como `falconscan_volume/core/odometry.py`. **No sumar `displacement_m`**: con
   `baseline_scans = 3` los intervalos se solapan y se contaría tres veces. `velocity_filtered_mps`
