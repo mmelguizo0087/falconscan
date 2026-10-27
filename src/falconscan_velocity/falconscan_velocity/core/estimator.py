@@ -13,7 +13,7 @@ from enum import IntEnum
 import numpy as np
 
 from .correlation import CorrelationResult, find_shift
-from .geometry import MountGeometry, ProfileGrid, height_profile, object_extent, object_mask, polar_to_xz
+from .geometry import MountGeometry, ProfileGrid, fan_mask, height_profile, object_extent, object_mask, polar_to_xz
 from .scan import Scan, median_filter, validate_ranges
 
 
@@ -44,6 +44,9 @@ class VelocityParams:
     range_max_m: float = 12.0
     median_window: int = 3
     median_max_spread_m: float = 0.15  # ventana incompleta: si los válidos discrepan más, se invalida
+    # Abanico de interés (marco mundo, desde la vertical hacia abajo; + hacia +x). Fuera: NaN (D16)
+    fan_angle_rad: float = 2 * math.pi   # apertura total; 2π = todo el giro, sin filtro
+    fan_center_rad: float = 0.0        # 0 = centrado en el nadir
     # --- Malla / ROI ---
     roi_x_min_m: float = -3.0
     roi_x_max_m: float = 3.0
@@ -180,6 +183,7 @@ class VelocityEstimator:
         r_min = max(p.range_min_m, scan.range_min)
         r_max = min(p.range_max_m, scan.range_max)
         r = (validate_ranges(scan.ranges, r_min, r_max) - p.range_bias_m) * p.range_scale
+        r[~fan_mask(scan.angles, self._geom, p.fan_angle_rad, p.fan_center_rad)] = np.nan
         r = median_filter(r, p.median_window, max_spread=p.median_max_spread_m)
         x, z = polar_to_xz(r, scan.angles, self._geom)
         # Orden temporal de los rayos respecto a stamp (= primer rayo medido). sllidar_ros2 con

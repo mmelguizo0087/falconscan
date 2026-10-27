@@ -45,7 +45,7 @@ el volumen de material del volco.
 src/falconscan_velocity/        paquete ROS 2 (ament_python)
   falconscan_velocity/core/     algoritmo en Python puro + numpy; NO importa ROS
     scan.py                     validación de rangos, mediana con NaN
-    geometry.py                 polar→xz, perfil h(x) en malla espacial, segmentación
+    geometry.py                 polar→xz, abanico de interés, perfil h(x) en malla espacial, segmentación
     correlation.py              NCC con máscara, subcelda, ambigüedad
     estimator.py                VelocityParams, VelocityEstimator, Status
     pass_tracker.py             máquina de estados de paso (PassTracker, PassEvent, PassFlag)

@@ -62,6 +62,21 @@ def polar_to_xz(r: np.ndarray, theta: np.ndarray, g: MountGeometry) -> tuple[np.
     return x, z
 
 
+def fan_mask(theta: np.ndarray, g: MountGeometry, fan_angle_rad: float, fan_center_rad: float = 0.0) -> np.ndarray:
+    """Rayos dentro del abanico de interés, medido en el marco mundo desde la vertical hacia abajo.
+
+    El ángulo de cada rayo respecto del nadir es delta = phi + π/2 (positivo hacia +x). Se aceptan
+    los rayos con |delta − fan_center_rad| <= fan_angle_rad / 2. Con fan_angle_rad >= 2π no se
+    filtra nada. Al estar en el marco mundo, el abanico sigue al nadir calibrado (angle_offset).
+    """
+    theta = np.asarray(theta, dtype=np.float64)
+    if fan_angle_rad >= 2 * np.pi:
+        return np.ones(theta.shape, dtype=bool)
+    delta = g.angle_direction * theta + g.angle_offset_rad + np.pi / 2 - fan_center_rad
+    delta = (delta + np.pi) % (2 * np.pi) - np.pi
+    return np.abs(delta) <= fan_angle_rad / 2
+
+
 def height_profile(
     x: np.ndarray,
     z: np.ndarray,

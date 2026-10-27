@@ -148,6 +148,21 @@ def test_objeto_en_la_roi_y_movimiento_se_avisan():
     assert c.moving_fraction > 0.05 and any("se movió" in w for w in c.warnings)
 
 
+def test_abanico_quita_el_soporte_sobre_el_sensor():
+    soporte = [(-0.5, 3.08, 0.5, 3.08)]                          # placa 8 cm por encima del sensor
+    c = calibrate_mount(escena(Hv=3.0, segmentos=soporte), ANG, 3.0, ABAJO)
+    assert c.roi_object_x_m is not None                          # sin abanico: «algo sobre el piso»
+    c = calibrate_mount(escena(Hv=3.0, segmentos=soporte), ANG, 3.0, ABAJO, fan_angle_rad=math.radians(120))
+    assert c.roi_object_x_m is None and not c.warnings
+    assert abs(c.range_offset_m) < 0.002
+
+
+def test_abanico_mas_angosto_que_la_roi_se_avisa():
+    c = calibrate_mount(escena(Hv=3.0), ANG, 3.0, ABAJO, fan_angle_rad=math.radians(60))
+    assert any("abanico" in w for w in c.warnings)               # llega hasta |x| = 1.73 m < 3 m
+    assert c.floor_x_range_m[0] > -1.8 and c.floor_x_range_m[1] < 1.8
+
+
 def test_rayos_sin_retorno_se_ignoran_no_se_rellenan():
     r = escena(Hv=3.0)
     r[::3] = np.nan

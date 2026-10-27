@@ -6,7 +6,7 @@
 velocity_node:
   ros__parameters:
     # --- Montaje: plano de escaneo vertical que CONTIENE el eje de avance ---
-    mount_height_m: 5.0          # altura del origen óptico sobre el piso  [MEDIR]
+    mount_height_m: 2.216          # altura del origen óptico sobre el piso  [MEDIR]
     # Convención de instalación (2026-10-21): la flecha de 0° del S2E apunta al piso. Con
     # sllidar_ros2 (inverted:=false) esa flecha es el rayo ROS 180° -> offset = −π/2 − π ≡ +π/2.
     # Es el valor NOMINAL: la calibración mide el desvío de la flecha y no lo sobrescribe.
@@ -25,6 +25,12 @@ velocity_node:
     range_max_m: 12.0
     median_window: 3
     median_max_spread_m: 0.15
+    # Abanico de interés: solo se usan los rayos a menos de fan_angle_rad/2 de fan_center_rad,
+    # medidos en el marco mundo desde la vertical hacia abajo (+ hacia +x); el resto queda NaN.
+    # Sigue al nadir calibrado. Quita el soporte y lo que está por encima del sensor (D16).
+    # 6.2831853 (360°) = sin filtro. Para cubrir la ROI hasta |x| = X: apertura > 2·atan(X / H).
+    fan_angle_rad: 2.0943951     # 120°: piso visto hasta |x| = 3.84 m con H = 2.216 m
+    fan_center_rad: 0.0          # 0 = centrado en el nadir
 
     # --- Malla / ROI longitudinal ---
     roi_x_min_m: -3.0

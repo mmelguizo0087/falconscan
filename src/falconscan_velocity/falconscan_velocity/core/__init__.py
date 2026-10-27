@@ -5,7 +5,7 @@ from .correlation import CorrelationResult, find_shift, masked_ncc
 from .estimator import Status, VelocityEstimate, VelocityEstimator, VelocityParams
 from .pass_tracker import ACTIVE_STATES, PassEvent, PassFlag, PassState, PassTracker
 from .pipeline import VelocityPipeline
-from .geometry import MountGeometry, ProfileGrid, height_profile, object_extent, polar_to_xz
+from .geometry import MountGeometry, ProfileGrid, fan_mask, height_profile, object_extent, polar_to_xz
 from .scan import Scan, median_filter, validate_ranges
 
 __all__ = [
@@ -14,6 +14,6 @@ __all__ = [
     "CorrelationResult", "find_shift", "masked_ncc",
     "Status", "VelocityEstimate", "VelocityEstimator", "VelocityParams",
     "ACTIVE_STATES", "PassEvent", "PassFlag", "PassState", "PassTracker", "VelocityPipeline",
-    "MountGeometry", "ProfileGrid", "height_profile", "object_extent", "polar_to_xz",
+    "MountGeometry", "ProfileGrid", "fan_mask", "height_profile", "object_extent", "polar_to_xz",
     "Scan", "median_filter", "validate_ranges",
 ]

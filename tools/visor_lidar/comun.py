@@ -36,6 +36,18 @@ def ros_a_sensor(a_ros_deg):
     return (360.0 - np.asarray(a_ros_deg, dtype=float)) % 360 - 180
 
 
+def bordes_abanico(x0: float, z0: float, apertura: float, centro: float, largo: float):
+    """Dos segmentos desde el sensor (x0, z0) por los bordes del abanico de interés (marco mundo,
+    ángulos desde la vertical hacia abajo, + hacia +x). Vacío si el abanico es el giro completo."""
+    if apertura >= 2 * np.pi - 1e-6:
+        return np.array([]), np.array([])
+    xs, zs = [], []
+    for d in (centro - apertura / 2, centro + apertura / 2):
+        xs += [x0, x0 + largo * np.sin(d), np.nan]
+        zs += [z0, z0 - largo * np.cos(d), np.nan]
+    return np.array(xs), np.array(zs)
+
+
 def ajuste_pared(x: np.ndarray, y: np.ndarray, tol: float = 0.03, intentos: int = 40):
     """Recta robusta: RANSAC (pares de puntos, inliers a < tol) y luego mínimos cuadrados totales.
 

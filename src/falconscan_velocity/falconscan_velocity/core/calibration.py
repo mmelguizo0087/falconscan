@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .geometry import MountGeometry, polar_to_xz
+from .geometry import MountGeometry, fan_mask, polar_to_xz
 
 
 @contextmanager
@@ -281,6 +281,8 @@ def calibrate_mount(
     offset_tol_max_m: float = 0.20,
     angle_tol_ok_rad: float = math.radians(0.5),
     angle_tol_max_rad: float = math.radians(5.0),
+    fan_angle_rad: float = 2 * math.pi,
+    fan_center_rad: float = 0.0,
     **fit_kwargs,
 ) -> MountCalibration:
     """Calibra con escaneos del piso vacío (`ranges`: M rayos o N×M, ya corregidos en rango).
@@ -288,16 +290,21 @@ def calibrate_mount(
     ``height_ref_m`` = mount_height_m (cinta, fijo). ``nominal_down_rad`` = rayo «abajo» nominal
     contra el que se mide el desvío de la flecha (por defecto, ``down_guess_rad``). Con varios
     escaneos se ajusta la mediana temporal y se usa la dispersión por rayo para avisar si algo se
-    movió. Lanza ValueError si no encuentra el piso.
+    movió. Solo se usan los rayos del abanico de interés (``fan_angle_rad`` / ``fan_center_rad``,
+    D16), centrado en ``down_guess_rad``: lo que queda fuera (soporte, techo) no entra en el ajuste
+    ni en los avisos. Lanza ValueError si no encuentra el piso.
     """
-    pila = np.atleast_2d(np.asarray(ranges, dtype=np.float64))
+    a = np.asarray(angles, dtype=np.float64)
+    g_guess = MountGeometry(height_ref_m, offset_from_down(down_guess_rad, angle_direction), angle_direction)
+    fuera = ~fan_mask(a, g_guess, fan_angle_rad, fan_center_rad)
+    pila = np.atleast_2d(np.asarray(ranges, dtype=np.float64)).copy()
+    pila[:, fuera] = np.nan
     if pila.shape[0] > 1:
         with np.errstate(invalid="ignore"), _sin_avisos():
             r = np.nanmedian(pila, axis=0)
             dispersion = np.nanstd(pila, axis=0)
     else:
         r, dispersion = pila[0], np.zeros(pila.shape[1])
-    a = np.asarray(angles, dtype=np.float64)
     nominal = down_guess_rad if nominal_down_rad is None else nominal_down_rad
 
     fit = fit_floor(r, a, height_ref_m, down_guess_rad, **fit_kwargs)
@@ -344,6 +351,14 @@ def calibrate_mount(
     if piso.any():
         ic = np.floor((x[piso] - x0) / 0.1).astype(int)
         dev = max(abs(float(np.median(z[piso][ic == c]))) for c in cubiertas)
+    if fan_angle_rad < 2 * math.pi:
+        # Bordes del abanico sobre el piso (rayo a delta del nadir llega a x = H·tan(delta))
+        bordes = [fan_center_rad - fan_angle_rad / 2, fan_center_rad + fan_angle_rad / 2]
+        x_fan = [h_perp * math.tan(d) if abs(d) < math.radians(89) else math.copysign(math.inf, d) for d in bordes]
+        if x_fan[0] > x0 or x_fan[1] < x1:
+            avisos.append(f"El abanico ({math.degrees(fan_angle_rad):.0f}°) solo llega al piso entre "
+                          f"x = {x_fan[0]:+.2f} y {x_fan[1]:+.2f} m y la ROI va de {x0:+.2f} a {x1:+.2f} m: "
+                          "ábrelo o achica la ROI.")
     if cobertura < 0.9:
         avisos.append(f"Solo se ve piso en el {cobertura * 100:.0f} % de la ROI: hay sombras o rayos sin "
                       "retorno (piso oscuro, mojado o muy rasante). Las celdas sin piso quedan NaN.")

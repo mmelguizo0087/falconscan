@@ -4,8 +4,9 @@ import math
 import numpy as np
 import pytest
 
-from falconscan_velocity.core import (MountGeometry, ProfileGrid, find_shift, height_profile,
-                                      median_filter, polar_to_xz, validate_ranges)
+from falconscan_velocity.core import (MountGeometry, ProfileGrid, Scan, VelocityEstimator, VelocityParams,
+                                      fan_mask, find_shift, height_profile, median_filter, polar_to_xz,
+                                      validate_ranges)
 
 
 # ---------------------------------------------------------------- validación
@@ -48,6 +49,30 @@ def test_polar_convention_nadir_and_forward():
     assert x[0] == pytest.approx(0.0, abs=1e-12) and z[0] == pytest.approx(0.0, abs=1e-12)
     # theta positivo -> hacia +x
     assert x[1] > 0 and z[1] == pytest.approx(5.0 - 2.0 * math.cos(math.pi / 4))
+
+
+def test_fan_mask_is_measured_from_the_nadir_in_the_world_frame():
+    g = MountGeometry(height_m=5.0, angle_offset_rad=-math.pi / 2)        # theta = 0 al nadir
+    th = np.radians([0.0, 30.0, -30.0, 60.0, -60.0, 180.0])
+    assert fan_mask(th, g, math.radians(90)).tolist() == [True, True, True, False, False, False]
+    # centro corrido 30° hacia +x: acepta de 0° a 60°
+    assert fan_mask(th, g, math.radians(90), math.radians(30)).tolist() == [True, True, False, True, False, False]
+    # sentido invertido: theta negativo va hacia +x
+    gi = MountGeometry(height_m=5.0, angle_offset_rad=-math.pi / 2, angle_direction=-1)
+    assert fan_mask(th, gi, math.radians(90), math.radians(30)).tolist() == [True, False, True, False, True, False]
+    assert fan_mask(th, g, 2 * math.pi).all()                           # giro completo: sin filtro
+
+
+def test_estimator_only_uses_rays_inside_the_fan():
+    th = np.arange(3240) * 2 * math.pi / 3240
+    r = np.full(th.size, 1.0)                                            # todo a 1 m, también arriba
+    scan = Scan(0.0, 0.0, 2 * math.pi / 3240, r)
+    base = dict(mount_height_m=2.0, angle_offset_rad=math.pi / 2, median_window=1)   # ROS 180° al nadir
+    f_todo = VelocityEstimator(VelocityParams(**base))._frame_from_scan(scan)
+    f_fan = VelocityEstimator(VelocityParams(**base, fan_angle_rad=math.radians(60)))._frame_from_scan(scan)
+    assert f_todo.x.size == th.size
+    assert f_fan.x.size == pytest.approx(th.size / 6, abs=2)
+    assert np.all(np.abs(f_fan.x) <= math.sin(math.radians(30)) + 1e-9) and np.all(f_fan.z < 2.0)
 
 
 def test_height_profile_takes_max_and_leaves_empty_as_nan():

@@ -23,15 +23,15 @@ import pyqtgraph as pg
 import yaml
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from comun import pantalla_compacta, ros_a_sensor, tarjeta, titulo_grafico
+from comun import bordes_abanico, pantalla_compacta, ros_a_sensor, tarjeta, titulo_grafico
 
 try:
     from falconscan_velocity.core import (PassEvent, PassFlag, PassState, Scan, Status, VelocityParams,
-                                         VelocityPipeline, polar_to_xz, validate_ranges)
+                                         VelocityPipeline, fan_mask, polar_to_xz, validate_ranges)
 except ImportError:   # sin `source install/setup.bash`: usar el código fuente del repo
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "falconscan_velocity"))
     from falconscan_velocity.core import (PassEvent, PassFlag, PassState, Scan, Status, VelocityParams,
-                                         VelocityPipeline, polar_to_xz, validate_ranges)
+                                         VelocityPipeline, fan_mask, polar_to_xz, validate_ranges)
 
 # La mediana del núcleo avisa en cada ventana de rayos sin retorno (normal en el S2E)
 warnings.filterwarnings("ignore", "All-NaN slice", RuntimeWarning)
@@ -275,6 +275,10 @@ CAMPOS = {
         ("roi_x_min_m", "ROI x mín", -15, 0, 2, 0.1, "m", 1, "Borde de entrada de los vehículos hacia +x (salida de los que van hacia −x)"),
         ("roi_x_max_m", "ROI x máx", 0, 15, 2, 0.1, "m", 1, "Borde de salida de los vehículos hacia +x (entrada de los que van hacia −x)"),
         ("roi_z_max_m", "Altura máx. considerada", 0.5, 30, 2, 0.1, "m", 1, "Por encima se descarta (estructura)"),
+        ("fan_angle_rad", "Abanico: apertura", 1, 360, 1, 5, "°", 180 / math.pi,
+         "Solo se usan los rayos dentro de este ángulo total (360° = sin filtro)"),
+        ("fan_center_rad", "Abanico: centro", -90, 90, 1, 1, "°", 180 / math.pi,
+         "Dirección central desde la vertical hacia abajo (+ hacia +x)"),
         ("object_h_threshold_m", "Umbral de altura objeto", 0.05, 5, 2, 0.05, "m", 1, "Altura sobre el piso a partir de la cual una celda es objeto"),
         ("object_min_bins", "Celdas mínimas objeto", 1, 500, 0, 1, "celdas", 1, "Con dx = 2 cm, 25 celdas = 0.5 m"),
     ],
@@ -529,6 +533,11 @@ class PanelPaso(QtWidgets.QWidget):
         self.ext_rect.setPen(pg.mkPen("#58a6ff", width=2))
         self.ext_rect.setBrush(pg.mkBrush(88, 166, 255, 40))
         self.g_xz.addItem(self.ext_rect)
+        self.abanico = pg.PlotDataItem(pen=pg.mkPen("#2fb8c4", width=1, style=QtCore.Qt.PenStyle.DotLine),
+                                       connect="finite")
+        self.g_xz.addItem(self.abanico)
+        self.puntos_fuera = pg.ScatterPlotItem(size=2, pen=None, brush=pg.mkBrush("#4a5560"))   # fuera del abanico
+        self.g_xz.addItem(self.puntos_fuera)
         self.puntos_xz = pg.ScatterPlotItem(size=3, pen=None, brush=pg.mkBrush("#c9d1d9"))
         self.g_xz.addItem(self.puntos_xz)
         self.perfil_h = pg.PlotDataItem(pen=pg.mkPen("#3fb950", width=2), stepMode="center", connect="finite")
@@ -687,6 +696,8 @@ class PanelPaso(QtWidgets.QWidget):
         self.piso.setPos(f)
         self.umbral.setPos(f + p.object_h_threshold_m)
         self.sensor.setData([p.x_offset_m], [p.mount_height_m])
+        self.abanico.setData(*bordes_abanico(p.x_offset_m, p.mount_height_m, p.fan_angle_rad, p.fan_center_rad,
+                                             1.5 * max(p.mount_height_m, p.roi_x_max_m - p.roi_x_min_m)))
         self.txt_roi.setText("ROI · franjas ámbar = bordes de entrada y salida")
         self.txt_roi.setAnchor((0, 0))
         self.txt_roi.setPos(p.roi_x_min_m, f - 0.05)
@@ -752,7 +763,9 @@ class PanelPaso(QtWidgets.QWidget):
              - p.range_bias_m) * p.range_scale
         x, z = polar_to_xz(r, scan.angles, p.geometry)
         ok = np.isfinite(x) & (z > p.floor_z_m - 1.0) & (z < p.mount_height_m + 1.0)
-        self.puntos_xz.setData(x[ok], z[ok])
+        dentro = fan_mask(scan.angles, p.geometry, p.fan_angle_rad, p.fan_center_rad)
+        self.puntos_xz.setData(x[ok & dentro], z[ok & dentro])
+        self.puntos_fuera.setData(x[ok & ~dentro], z[ok & ~dentro])
         if h is not None:
             xc = p.grid.x_min + np.arange(h.size + 1) * p.grid.dx
             self.perfil_h.setData(xc, h + p.floor_z_m)

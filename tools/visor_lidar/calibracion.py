@@ -18,10 +18,11 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from comun import ACENTO, AMBAR, ROJO, TEXTO_SUAVE, VERDE, ros_a_sensor, titulo_grafico
+from comun import ACENTO, AMBAR, ROJO, TEXTO_SUAVE, VERDE, bordes_abanico, ros_a_sensor, titulo_grafico
 from paso import _spin, cargar_params, guardar_params, nadir_ros_deg, offset_desde_nadir
 
-from falconscan_velocity.core import MountGeometry, calibrate_mount, detect_direction, polar_to_xz, validate_ranges
+from falconscan_velocity.core import (MountGeometry, calibrate_mount, detect_direction, fan_mask, polar_to_xz,
+                                     validate_ranges)
 from falconscan_velocity.core.calibration import CORREGIDO, FALLA, OK
 
 ESPERA_MAX_S = 15.0     # sin completar la captura en este tiempo -> se cancela
@@ -66,7 +67,8 @@ class PanelCalibracion(QtWidgets.QWidget):
         self.p_alto = pg.ScatterPlotItem(size=4, pen=None, brush=pg.mkBrush(ROJO))
         self.sensor = pg.ScatterPlotItem(size=14, brush=pg.mkBrush(ACENTO), pen=pg.mkPen("w"))
         self.plomada = pg.PlotDataItem(pen=pg.mkPen(AMBAR, width=1, style=QtCore.Qt.PenStyle.DashLine))
-        for it in (self.p_otros, self.p_piso, self.p_alto, self.plomada, self.sensor):
+        self.abanico = pg.PlotDataItem(pen=pg.mkPen(ACENTO, width=1, style=QtCore.Qt.PenStyle.DotLine), connect="finite")
+        for it in (self.abanico, self.p_otros, self.p_piso, self.p_alto, self.plomada, self.sensor):
             self.g_xz.addItem(it)
         self.leyenda = pg.TextItem("", color=TEXTO_SUAVE, anchor=(0, 0))
         self.g_xz.addItem(self.leyenda)
@@ -101,6 +103,26 @@ class PanelCalibracion(QtWidgets.QWidget):
                             "Se toma como verdadera: la calibración no la cambia y atribuye la diferencia\n"
                             "con lo que ve el sensor al offset de rango.")
         f.addRow("Altura medida con cinta", self.c_h)
+        self.c_zmax = _spin(0.5, 30, 2, 0.1, "m")
+        self.c_zmax.setValue(4.5)
+        self.c_zmax.setToolTip("roi_z_max_m: los puntos más altos que esto sobre el piso se descartan (soporte,\n"
+                               "estructura, polvo o insectos junto al sensor). Ponlo por debajo del sensor y por\n"
+                               "encima del vehículo más alto. Es el mismo campo de «Prueba de paso» (se aplica\n"
+                               "allí al cambiarlo); para dejarlo en velocity.yaml usa «Guardar en yaml» allí.")
+        f.addRow("Altura máx. considerada", self.c_zmax)
+        self.c_fan = _spin(1, 360, 1, 5, "°")
+        self.c_fan.setValue(360)
+        self.c_fan.setToolTip("fan_angle_rad: apertura total del abanico de interés, centrado en la vertical hacia\n"
+                              "abajo. Los rayos de fuera (soporte, techo, paredes) no se usan. 360° = sin filtro.\n"
+                              "Para ver el piso hasta |x| = X hace falta más de 2·atan(X / H). Es el mismo campo\n"
+                              "de «Prueba de paso» (el centro se ajusta allí); para dejarlo en velocity.yaml usa\n"
+                              "«Guardar en yaml» allí.")
+        f.addRow("Abanico (apertura)", self.c_fan)
+        # Campos compartidos con «Prueba de paso»: nombre -> (widget, factor de visualización, etiqueta)
+        self.compartidos = {"roi_z_max_m": (self.c_zmax, 1.0, "Altura máx. considerada"),
+                            "fan_angle_rad": (self.c_fan, 180 / math.pi, "Abanico (apertura)")}
+        for n in self.compartidos:
+            self.compartidos[n][0].editingFinished.connect(lambda n=n: self._compartido_cambiado(n))
         self.chk_pend = QtWidgets.QCheckBox("Conozco la pendiente del piso")
         self.chk_pend.setToolTip("Medida con nivel digital o inclinómetro sobre el piso, a lo largo del avance.\n"
                                  "Solo hace falta para separar la inclinación del sensor de la del piso:\n"
@@ -217,7 +239,34 @@ class PanelCalibracion(QtWidgets.QWidget):
             p = self.v.paso.params_yaml                    # nominales
             self.c_abajo.setValue(nadir_ros_deg(p))
             self.c_h.setValue(p.mount_height_m - p.floor_z_m)
+        cambio = False
+        for n, (w, factor, _) in self.compartidos.items():      # pudieron cambiar en «Prueba de paso»
+            v = getattr(self.v.paso.params_form, n) * factor
+            if not math.isclose(w.value(), round(v, w.decimals()), abs_tol=1e-9):
+                w.blockSignals(True)
+                w.setValue(v)
+                w.blockSignals(False)
+                cambio = True
+        if cambio:
+            self._mostrar()
         self._abajo_txt()
+
+    def _compartido_cambiado(self, nombre):
+        """Mismo parámetro que «Prueba de paso»: se aplica allí (reinicia la máquina) y se recalcula."""
+        paso = self.v.paso
+        w, _, etiqueta = self.compartidos[nombre]
+        w_paso = paso.campos[nombre][0]
+        if math.isclose(w_paso.value(), w.value(), abs_tol=1e-9):
+            return
+        w_paso.setValue(w.value())
+        paso.aplicar(silencioso=True)
+        self.v._log(f"{etiqueta} = {w.value():g} {w.suffix().strip()} (aplicado en Prueba de paso; "
+                    "sin guardar en velocity.yaml).", "aviso")
+        self._mostrar()
+
+    def _abanico(self) -> tuple[float, float]:
+        """(apertura, centro) en rad: la apertura del campo de esta pestaña, el centro de «Prueba de paso»."""
+        return math.radians(self.c_fan.value()), self.v.paso.params_form.fan_center_rad
 
     def _abajo_txt(self):
         self.lbl_abajo.setText(f"= {ros_a_sensor(self.c_abajo.value()):+.1f}° en la marca del S2E")
@@ -293,10 +342,11 @@ class PanelCalibracion(QtWidgets.QWidget):
             self.pila_vacio, self.ang, self.c_h.value(), math.radians(self.c_abajo.value()),
             nominal_down_rad=math.radians(nadir_ros_deg(q)), angle_direction=d,
             floor_slope_rad=math.radians(self.c_pend.value()) if self.chk_pend.isChecked() else None,
-            roi_x_m=(q.roi_x_min_m, q.roi_x_max_m), roi_z_max_m=q.roi_z_max_m,
+            roi_x_m=(q.roi_x_min_m, q.roi_x_max_m), roi_z_max_m=self.c_zmax.value(),
             object_h_threshold_m=q.object_h_threshold_m,
             offset_tol_ok_m=q.cal_offset_tol_ok_m, offset_tol_max_m=q.cal_offset_tol_max_m,
-            angle_tol_ok_rad=q.cal_angle_tol_ok_rad, angle_tol_max_rad=q.cal_angle_tol_max_rad)
+            angle_tol_ok_rad=q.cal_angle_tol_ok_rad, angle_tol_max_rad=q.cal_angle_tol_max_rad,
+            fan_angle_rad=self._abanico()[0], fan_center_rad=self._abanico()[1])
 
     def _mostrar(self, *_):
         if self.pila_vacio is None:
@@ -367,20 +417,24 @@ class PanelCalibracion(QtWidgets.QWidget):
         p = self.v.paso.params_yaml
         x, z = polar_to_xz(r, self.ang, c.geometry)
         ok = np.isfinite(x) & (z > -1.0) & (z < c.perp_height_m + 1.0)
+        fan = self._abanico()
+        dentro = fan_mask(self.ang, c.geometry, *fan)
         piso = ok & c.fit.inliers
-        alto = ok & ~piso & (x >= p.roi_x_min_m) & (x < p.roi_x_max_m) & (z > 0.10) & (z < p.roi_z_max_m)
+        alto = ok & dentro & ~piso & (x >= p.roi_x_min_m) & (x < p.roi_x_max_m) & (z > 0.10) & (z < self.c_zmax.value())
         otros = ok & ~piso & ~alto
         self.p_piso.setData(x[piso], z[piso])
         self.p_alto.setData(x[alto], z[alto])
         self.p_otros.setData(x[otros], z[otros])
         self.sensor.setData([0.0], [c.perp_height_m])
-        self.roi_rect.setRect(p.roi_x_min_m, 0.0, p.roi_x_max_m - p.roi_x_min_m, p.roi_z_max_m)
+        self.abanico.setData(*bordes_abanico(0.0, c.perp_height_m, *fan,
+                                             1.5 * max(c.perp_height_m, p.roi_x_max_m - p.roi_x_min_m)))
+        self.roi_rect.setRect(p.roi_x_min_m, 0.0, p.roi_x_max_m - p.roi_x_min_m, self.c_zmax.value())
         if c.plumb_angle_rad is not None:       # vertical real dibujada en el marco del piso
             xp, zp = polar_to_xz(np.array([0.0, c.perp_height_m * 1.05]), np.full(2, c.plumb_angle_rad), c.geometry)
             self.plomada.setData(xp, zp)
         else:
             self.plomada.setData([], [])
-        self.leyenda.setText("verde: piso · rojo: algo en la ROI\ngris: resto"
+        self.leyenda.setText("verde: piso · rojo: algo en la ROI\ngris: resto · punteado: abanico"
                              + (" · ámbar: plomada" if c.plumb_angle_rad is not None else ""))
         self.leyenda.setPos(p.roi_x_min_m, c.perp_height_m + 1.0)
         self.r_puntos.setData(x[piso], z[piso] * 1e3)
@@ -402,7 +456,9 @@ class PanelCalibracion(QtWidgets.QWidget):
         ok = np.isfinite(x) & (z > -2.0) & (z < g.height_m + 1.0)
         self.p_otros.setData(x[ok], z[ok])
         self.sensor.setData([0.0], [g.height_m])
-        self.roi_rect.setRect(p.roi_x_min_m, 0.0, p.roi_x_max_m - p.roi_x_min_m, p.roi_z_max_m)
+        self.abanico.setData(*bordes_abanico(0.0, g.height_m, *self._abanico(),
+                                             1.5 * max(g.height_m, p.roi_x_max_m - p.roi_x_min_m)))
+        self.roi_rect.setRect(p.roi_x_min_m, 0.0, p.roi_x_max_m - p.roi_x_min_m, self.c_zmax.value())
         self.leyenda.setText("En vivo, configuración actual:\nel piso debería verse en z ≈ 0")
         self.leyenda.setPos(p.roi_x_min_m, g.height_m + 1.0)
 
@@ -478,6 +534,8 @@ class PanelCalibracion(QtWidgets.QWidget):
                 "rayo_abajo_nominal_ros_deg": deg(c.nominal_down_rad),
                 "escaneos": c.n_scans,
                 "range_bias_m": p0.range_bias_m, "range_scale": p0.range_scale,
+                "roi_z_max_m": self.c_zmax.value(),
+                "abanico_apertura_deg": self.c_fan.value(), "abanico_centro_deg": deg(self._abanico()[1]),
             },
             "resultado": {
                 "offset_rango_m": c.range_offset_m, "offset_sigma_m": c.range_offset_sigma_m,
