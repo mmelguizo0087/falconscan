@@ -19,7 +19,7 @@ from .scan import Scan, median_filter, validate_ranges
 
 class Status(IntEnum):
     OK = 0
-    NO_OBJECT = 1         # no hay objeto en la ROI (o se acaba de perder)
+    NO_OBJECT = 1         # escaneo sin objeto en la ROI (se salta sin borrar el historial)
     WARMING_UP = 2        # aún no hay perfil de referencia
     BAD_DT = 3            # Δt <= 0 o demasiado grande
     LOW_OVERLAP = 4       # pocos puntos válidos en común / sin variación
@@ -56,10 +56,12 @@ class VelocityParams:
     object_h_threshold_m: float = 0.4
     object_min_bins: int = 25
     object_min_run_bins: int = 5       # tramo continuo mínimo (10 cm con dx = 2 cm)
+    empty_reset_scans: int = 5         # escaneos vacíos SEGUIDOS para reiniciar el historial (objeto ido)
     # --- Correlación ---
     baseline_scans: int = 3            # comparar con el escaneo de hace N (Δt mayor = menos ruido en v)
-    v_min_mps: float = -6.0            # simétrico: mide ambos sentidos (D13)
+    v_min_mps: float = -0.5            # con search_mode = "sentido"/"fija" (ver _search_range)
     v_max_mps: float = 6.0
+    search_mode: str = "simetrica"     # "simetrica" | "sentido" | "fija" (ver _search_range)
     min_overlap_bins: int = 60
     min_profile_std_m: float = 0.05
     peak_exclusion_bins: int = 3
@@ -73,27 +75,27 @@ class VelocityParams:
     accel_margin_mps: float = 0.3
     # --- Filtro temporal (EMA sobre v ya estimada, reporte §5.10) ---
     ema_alpha: float = 0.4
-    # --- Máquina de estados de paso (core/pass_tracker.py, docs/maquina_estados_paso.md) ---
+    # --- Paso de camión (PassTracker, docs/maquina_estados_paso.md §2) ---
     pass_enter_scans: int = 3          # escaneos ocupados para confirmar la entrada
-    pass_exit_scans: int = 5           # escaneos vacíos para cerrar el paso (tolera huecos de 0.4 s)
+    pass_exit_scans: int = 5           # escaneos vacíos para confirmar la salida
     pass_empty_scans: int = 5          # escaneos vacíos para salir de ARRANQUE / OBSTRUIDO
-    pass_max_s: float = 30.0           # ocupación más larga -> TIMEOUT / OBSTRUIDO
+    pass_max_s: float = 30.0           # duración máxima de un paso -> TIMEOUT
     scan_timeout_s: float = 0.5        # sin escaneos -> SIN_DATOS
-    pass_edge_margin_m: float = 1.0    # franja de borde para validar entrada/salida
+    pass_edge_margin_m: float = 1.0    # franja de borde de la ROI para entrada/salida
     pass_v_min_mps: float = 1.39       # 5 km/h
-    pass_v_max_mps: float = 2.78       # 10 km/h (equipo, 2026-10-21)
+    pass_v_max_mps: float = 2.78       # 10 km/h
     pass_v_tolerance_mps: float = 0.3
-    pass_reverse_v_mps: float = -0.2
+    pass_reverse_v_mps: float = -0.2   # v_avance por debajo = reversa
     pass_reverse_scans: int = 3
     pass_min_valid_fraction: float = 0.6
-    pass_both_directions: bool = True  # el vehículo puede cruzar hacia +x o hacia −x (D13)
     # --- Calibración con el piso (core/calibration.py; docs/maquina_estados_paso.md, sección 1) ---
     cal_offset_tol_ok_m: float = 0.03      # |b| hasta aquí: «Altura OK»; si no, «offset corregido»
     cal_offset_tol_max_m: float = 0.20     # |b| mayor: FALLA, revisar montaje (equipo, 2026-10-21)
     cal_angle_tol_ok_rad: float = 0.0087   # 0.5°: 2.6 cm de altura en el borde de la ROI (x = 3 m)
     cal_angle_tol_max_rad: float = 0.0873  # 5°: con la flecha al piso, soporte flojo o mal instalado
-    # --- Referencia de signo para la salida (no cambia la geometría ni la ROI) ---
-    invert_velocity_sign: bool = False # True: positivo = hacia −x
+    # --- Referencia de signo SOLO para mostrar (visor/HMI). Núcleo y mensajes ROS van siempre en
+    #     el marco mundo (+x): el volumen integra velocity_mps tal como sale (D20) ---
+    invert_velocity_sign: bool = False # True: en pantalla, positivo = hacia −x
 
     @classmethod
     def field_names(cls) -> list[str]:
@@ -169,6 +171,8 @@ class VelocityEstimator:
         self._history: deque[_Frame] = deque(maxlen=max(1, self.p.baseline_scans) + 1)
         self._last_valid: tuple[float, float] | None = None  # (stamp, v)
         self._v_filt = float("nan")
+        self._n_empty = 0                 # escaneos vacíos consecutivos
+        self._direction = 0               # sentido del paso (+1/-1); 0 = desconocido
         self.last_profile: np.ndarray | None = None
         self.last_correlation: CorrelationResult | None = None
 
@@ -177,6 +181,28 @@ class VelocityEstimator:
         self._history.clear()
         self._last_valid = None
         self._v_filt = float("nan")
+        self._n_empty = 0
+
+    def set_direction(self, direction: int) -> None:
+        """Sentido del paso en curso (+1 / -1), o 0 si no se conoce. Lo fija el PassTracker."""
+        self._direction = int(np.sign(direction))
+
+    def _search_range(self) -> tuple[float, float]:
+        """Rango de velocidades [m/s] en el que se busca el pico de correlación.
+
+        - "fija": [v_min, v_max] en el marco x del sensor (comportamiento original; no ve
+          camiones en -x).
+        - "simetrica": [-v_max, v_max] siempre.
+        - "sentido": sentido · [v_min, v_max] con el sentido del paso; simétrico mientras no
+          se conozca. Mismo ancho que "fija" una vez conocido.
+        """
+        p = self.p
+        if p.search_mode == "fija":
+            return p.v_min_mps, p.v_max_mps
+        if p.search_mode == "sentido" and self._direction != 0:
+            lo, hi = self._direction * p.v_min_mps, self._direction * p.v_max_mps
+            return min(lo, hi), max(lo, hi)
+        return -p.v_max_mps, p.v_max_mps
 
     def _frame_from_scan(self, scan: Scan) -> _Frame:
         p = self.p
@@ -208,13 +234,7 @@ class VelocityEstimator:
     def profile_from_scan(self, scan: Scan, v: float = 0.0) -> np.ndarray:
         return self._profile(self._frame_from_scan(scan), v)
 
-    def process(self, scan: Scan, keep_history: bool = False) -> VelocityEstimate:
-        """Estima la velocidad de un escaneo.
-
-        ``keep_history``: con un escaneo sin objeto, conservar el historial en vez de reiniciar.
-        Lo usa ``VelocityPipeline`` dentro de un paso (huecos de SALIENDO); los huecos largos los
-        acota la verificación de Δt (BAD_DT). Por defecto (uso aislado) reinicia como siempre.
-        """
+    def process(self, scan: Scan) -> VelocityEstimate:
         p = self.p
         frame = self._frame_from_scan(scan)
         v_hint = self._v_filt if (np.isfinite(self._v_filt) and p.deskew_iterations > 0) else 0.0
@@ -224,9 +244,15 @@ class VelocityEstimator:
         out = VelocityEstimate(stamp=scan.stamp, status=Status.NO_OBJECT)
 
         if int(mask.sum()) < p.object_min_bins:
-            if not keep_history:
+            # Un escaneo vacío aislado (dropout, hueco cabina–volco) se salta sin borrar el
+            # historial: el siguiente escaneo con objeto se compara con la referencia guardada
+            # (Δt algo mayor) y no vuelve a WARMING_UP. Solo se reinicia cuando el objeto se fue.
+            # Un hueco largo lo acota igual la verificación BAD_DT.
+            self._n_empty += 1
+            if self._n_empty >= p.empty_reset_scans:
                 self.reset()
             return out
+        self._n_empty = 0
         out.object_extent = object_extent(h, self._grid, p.object_h_threshold_m, p.object_min_run_bins)
 
         self._history.append(frame)
@@ -246,8 +272,9 @@ class VelocityEstimator:
             return out
 
         dx = self._grid.dx
-        k_min = math.floor(p.v_min_mps * dt / dx) - 1
-        k_max = math.ceil(p.v_max_mps * dt / dx) + 1
+        v_lo, v_hi = self._search_range()
+        k_min = math.floor(v_lo * dt / dx) - 1
+        k_max = math.ceil(v_hi * dt / dx) + 1
         deskew = p.deskew_iterations > 0 and bool(np.any(frame.tau > 0))
         n_pass = 1 + p.deskew_iterations if deskew else 1
         v_pass = v_hint if deskew else 0.0

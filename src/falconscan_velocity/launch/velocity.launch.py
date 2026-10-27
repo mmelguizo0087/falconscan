@@ -14,9 +14,11 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from falconscan_velocity.sim import SIM_VELOCITY_OVERRIDES
+
 
 def generate_launch_description():
-    cfg = os.path.join(get_package_share_directory("falconscan_velocity"), "config", "velocity.yaml")
+    cfg = os.path.join(get_package_share_directory("falconscan_velocity"), "config", "falconscan.yaml")
     use_sim = LaunchConfiguration("use_sim")
     scan_topic = LaunchConfiguration("scan_topic")
     return LaunchDescription([
@@ -40,14 +42,13 @@ def generate_launch_description():
             remappings=[("scan", scan_topic)],
             output="screen",
         ),
-        # El simulador publica los rayos en orden de medición y con rangos exactos: sin la
-        # inversión de sllidar_ros2 ni la calibración de rango del sensor físico.
+        # Con el simulador: su altura, rayos en orden de medición y rangos exactos (sim/__init__.py)
         Node(
             package="falconscan_velocity",
             executable="velocity_node",
             name="velocity_node",
             condition=IfCondition(use_sim),
-            parameters=[cfg, {"scan_time_reversed": False, "range_bias_m": 0.0, "range_scale": 1.0}],
+            parameters=[cfg, SIM_VELOCITY_OVERRIDES],
             remappings=[("scan", scan_topic)],
             output="screen",
         ),

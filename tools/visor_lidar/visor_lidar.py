@@ -36,8 +36,9 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
-from paso import PanelPaso, ReproductorBag, Scan, inspeccionar_bag
+from paso import PanelPaso, ReproductorBag, Scan, _seccion_velocidad, inspeccionar_bag
 from calibracion import PanelCalibracion
+from volumen import PanelVolumen
 from comun import (ACENTO, AMBAR, BORDE, FONDO, PANEL, ROJO, TEXTO, TEXTO_SUAVE, VERDE,
                    ajuste_pared, chip, pantalla_compacta, ros_a_sensor, titulo_grafico)
 
@@ -45,7 +46,7 @@ REPO = Path(__file__).resolve().parents[2]
 DATOS = Path(os.environ.get("FALCONSCAN_DATOS", REPO.parent))
 CARPETA_BAGS = DATOS / "rosbags"
 CARPETA_CAPTURAS = DATOS / "capturas"
-CALIBRACION_YAML = REPO / "src" / "falconscan_velocity" / "config" / "velocity.yaml"
+CALIBRACION_YAML = REPO / "src" / "falconscan_velocity" / "config" / "falconscan.yaml"   # velocity_node y volume_node
 
 LIDAR_IP = "192.168.11.2"
 CMD_DRIVER = ["ros2", "launch", "sllidar_ros2", "sllidar_s2e_launch.py", "frame_id:=lidar"]
@@ -101,10 +102,12 @@ QPushButton#registro[alerta="true"] {{ color: {ROJO}; border-color: {ROJO}; }}
 # ----------------------------------------------------------------------------- utilidades
 
 def leer_calibracion() -> tuple[float, float]:
-    """(range_scale, range_bias_m) de velocity.yaml; (1, 0) si no se encuentran."""
+    """(range_scale, range_bias_m) de la sección velocity_node del yaml; (1, 0) si no se encuentran."""
     try:
         txt = CALIBRACION_YAML.read_text()
-    except OSError:
+        i0, i1 = _seccion_velocidad(txt)
+        txt = txt[i0:i1]
+    except (OSError, ValueError):
         return 1.0, 0.0
     def valor(nombre, defecto):
         m = re.search(rf"^\s*{nombre}:\s*([-+0-9.eE]+)", txt, re.M)
@@ -391,6 +394,8 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.pestanas.addTab(self.paso, "Prueba de paso")
         self.calib = PanelCalibracion(self, DATOS)
         self.pestanas.addTab(self.calib, "Calibración")
+        self.vol = PanelVolumen(self, CALIBRACION_YAML, DATOS)
+        self.pestanas.addTab(self.vol, "Volumen 3D")
         self.pestanas.currentChanged.connect(lambda _: setattr(self, "_ultimo_dibujado", -1))
         raiz.addWidget(self.pestanas, 1)
 
@@ -762,6 +767,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
 
     def closeEvent(self, ev):
         self.reproductor.detener()
+        self.vol.cerrar()
         if self.bag.activo():
             self.bag.detener(esperar_ms=5000)
         if self.driver.activo():
@@ -876,6 +882,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         en_paso = self.pestanas.currentIndex() == 1
         en_calib = self.pestanas.currentWidget() is self.calib
         self.paso.refrescar(congelado=self.b_congelar.isChecked(), dibujar=en_paso)   # eventos siempre
+        self.vol.refrescar(dibujar=self.pestanas.currentWidget() is self.vol)          # mediciones siempre
         if ultimo is None or recibidos == self._ultimo_dibujado or self.b_congelar.isChecked():
             return
         self._ultimo_dibujado = recibidos
@@ -1152,7 +1159,7 @@ En ángulo del sensor el eje va de −180° a 180° con el frente en el centro (
 <b>Análisis de sector</b>: arrastra la franja sobre una pared. El visor ajusta una recta
 en cada escaneo (últimos 3 s) y da la distancia perpendicular, su variación y el ruido.
 Si escribes la distancia de referencia (cinta), calcula el sesgo.<br>
-<b>Corregir rango</b>: aplica la calibración de velocity.yaml (r − sesgo)·escala.<br>
+<b>Corregir rango</b>: aplica la calibración de falconscan.yaml (r − sesgo)·escala.<br>
 <b>Mediana de N</b>: suaviza el ruido promediando escaneos; úsalo solo con la escena quieta.<br><br>
 <b>Prueba de paso</b> (pestaña): corre el estimador de velocidad y la máquina de estados de paso
 (docs/maquina_estados_paso.md) sobre cada escaneo. Muestra el plano de escaneo con la ROI, el perfil h(x)
@@ -1160,11 +1167,17 @@ y el objeto detectado; la velocidad en km/h; y una fila por paso con sus bandera
 Escribe la velocidad de referencia de cada paso para obtener el error.
 Se miden ambos sentidos: el signo de la velocidad y la columna «Sentido» dicen hacia dónde fue cada vehículo
 (por defecto positivo = hacia +x, →). «Invertir referencia» cambia el signo sin reiniciar nada. Antes de probar, ajusta el
-montaje con la pestaña Calibración y guarda en velocity.yaml si los valores sirven.
+montaje con la pestaña Calibración y guarda en falconscan.yaml si los valores sirven.
 Con la fuente «Rosbag grabado» se repite un paso con otros parámetros.<br><br><b>Calibración</b> (pestaña): con la altura medida con cinta y el piso vacío, ajusta la recta del piso y da
 la altura perpendicular, el rayo hacia abajo y la inclinación (sensor + pendiente del piso, compensadas juntas
 porque el vehículo avanza paralelo al piso). Con un objeto del lado de entrada detecta el sentido de avance.
-Guarda en velocity.yaml y deja una ficha en {DATOS / "calibraciones"}.<br><br>
+Guarda en falconscan.yaml y deja una ficha en {DATOS / "calibraciones"}.<br><br>
+<b>Volumen 3D</b> (pestaña): corre el reconstructor de volumen (docs/maquina_estados_volumen.md) con los DOS LiDAR,
+con su propia fuente: simulador del pórtico (escenarios de la matriz de regresión; se generan una vez y quedan en caché),
+ROS en vivo (dos tópicos) o un rosbag con los dos. Muestra la nube y la superficie en 3D (arrastra para girar,
+rueda para acercar), la superficie vista desde arriba, las áreas A(x) y el perfil transversal en vivo, y una fila por
+medición con el volumen de la envolvente, su resultado y banderas; con el simulador, el volumen verdadero y el error
+(resultado sintético, no de campo). «Exportar PLY + JSON» guarda la medición seleccionada.<br><br>
 <b>Pantalla</b>: F11 alterna pantalla completa; F2 muestra el registro (la última línea queda abajo).<br><br>
 Rosbags: {CARPETA_BAGS}<br>Capturas: {CARPETA_CAPTURAS}<br>Pasos: {DATOS / "pruebas_paso"}""")
 

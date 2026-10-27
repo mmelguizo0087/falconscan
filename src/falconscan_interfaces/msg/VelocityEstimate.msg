@@ -20,7 +20,8 @@ uint8 status
 string status_text
 bool valid                           # status == STATUS_OK
 
-# Velocidad con signo en la referencia del usuario (invert_velocity_sign): el signo dice el sentido
+# Velocidad con signo en el marco mundo (+x); no se aplica invert_velocity_sign (es solo para mostrar).
+# Para integrar posición o volumen: velocity_mps en header.stamp (mid_stamp); no sumar displacement_m.
 float64 velocity_mps                 # velocidad media del intervalo; NaN si no es válida
 float64 velocity_filtered_mps        # EMA (tiene retardo; no usar para integrar posición)
 float64 displacement_m               # Δs del intervalo
@@ -32,14 +33,11 @@ float32 peak_correlation
 float32 peak_prominence
 uint32 n_overlap
 
-# Paso al que pertenece el escaneo (EN_PASO o SALIENDO); 0 fuera de un paso confirmado.
-# Los escaneos de ENTRANDO salen con 0: para incluirlos use PassEvent.t_start.
-uint32 pass_id
-int8 direction                       # sentido del paso abierto en la referencia de signo; 0 si no se sabe
-# Rapidez de avance del escaneo = sentido · v (positiva al avanzar, negativa al retroceder; NaN si
-# no es válida o no hay sentido). Para integrar Δx del volumen: advance_mps · dt_s.
-float64 advance_mps
-
 # Extensión del objeto en la ROI [m, eje de avance]; NaN si no hay objeto
 float32 object_x_start_m
 float32 object_x_end_m
+
+# Paso de camión (PassTracker). Los escaneos de ENTRANDO salen con pass_id 0: use PassEvent.t_start
+uint32 pass_id                       # 0 si no hay paso abierto
+int8 direction                       # +1 / -1 del paso; 0 si no se conoce
+float64 advance_mps                  # direction · velocity_mps (rapidez de avance); NaN si no es válida

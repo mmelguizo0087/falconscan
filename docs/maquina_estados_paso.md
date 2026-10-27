@@ -14,32 +14,31 @@ Estado:
 - **2026-10-20:** máquina de operación aprobada en estados y salidas.
 - **2026-10-21:** se agrega la máquina de calibración, se limita la velocidad de paso a
   **5–10 km/h** y la operación pasa a ser bidireccional. Las decisiones del usuario están en
-  «Decisiones». **Diseño listo para implementar**, salvo los puntos de «Pendiente de decidir».
-- **2026-10-21 (rama `calibracion-sensor-real`):** se actualiza con lo ya implementado. La
-  máquina de operación está en el código y ya es bidireccional; la de calibración y el
-  supervisor siguen sin implementar. Detalle en «Estado de implementación».
-- **2026-10-21, más tarde:** el código se alinea con las decisiones de este documento:
-  - regla de sentido de la propuesta y bandera `SENTIDO_INCONSISTENTE`;
-  - rapidez de avance en los mensajes;
-  - 5–10 km/h;
-  - cambio de `reset()`, medido en simulación;
-  - flecha 0° al piso como nominal, también en el simulador;
-  - calibración con H fijo y ajuste del offset `b`.
+  «Decisiones».
+- **2026-10-21 (rama `calibracion-sensor-real`, Juan Manuel):** implementación en paralelo de la
+  máquina de operación bidireccional, calibración con el piso (herramienta del visor) y abanico.
+- **2026-10-24 (Martín):** **máquina de operación IMPLEMENTADA** (`core/pass_tracker.py`: `PassTracker`
+  y `VelocityPipeline`; publicada por `velocity_node` en `/pass_state` y `/pass_event`). La
+  búsqueda de la correlación quedó **simétrica** (medido; ver D18 en `algoritmo_velocidad.md`).
+- **2026-10-27 (integración de las dos ramas):** queda el `PassTracker` de Martín, que usa el
+  LiDAR de volumen, con dos correcciones (D21: `n_scans` cuenta solo escaneos ocupados, incluida
+  la entrada; plazo de SIN_DATOS desde el primer `tick`). Mensajes en el marco mundo (D20).
+  La **calibración y el supervisor siguen sin implementar**: los nodos operan con la geometría
+  del archivo de parámetros (`config/falconscan.yaml`) y T13/T14 no existen todavía.
 
 ### Estado de implementación
 
 | Parte | Estado | Dónde |
 |---|---|---|
-| Máquina de operación (T1–T12, banderas, `pass_id`) | **Implementada** | `core/pass_tracker.py`, `test/test_pass_tracker.py` |
-| Operación bidireccional con la regla de esta propuesta (sentido en T5, `v_avance`, `SENTIDO_INCONSISTENTE`) | **Implementada** | `core/pass_tracker.py` |
-| Búsqueda de la correlación en ambos sentidos | **Implementada: simétrica** `[−6, 6]` m/s, medida en simulación | `config/velocity.yaml` (`v_min_mps: -6.0`) |
-| Cambio de `reset()` del estimador | **Implementado y medido** | `core/pipeline.py` (`VelocityPipeline`), `tools/evaluate_passes.py` |
-| Velocidad de paso 5–10 km/h (`pass_v_max_mps = 2.78`) | **Implementada** | `config/velocity.yaml`, `VelocityParams` |
-| Salidas `/pass_state` y `/pass_event`; `direction` y `advance_mps` en `VelocityEstimate` | **Implementadas** | `velocity_node.py`, `falconscan_interfaces/msg/` |
-| Flecha 0° al piso como nominal (`angle_offset_rad = +π/2`) | **Implementada**, también en el simulador (nadir en ROS 180°) | `config/velocity.yaml`, `sim/lidar_sim.py` |
+| Máquina de operación (T1–T12, banderas, `pass_id`), bidireccional (sentido en T5 por el borde, `v_avance`, `SENTIDO_INCONSISTENTE`) | **Implementada** | `core/pass_tracker.py`, `test/test_pass_tracker.py` |
+| Búsqueda de la correlación | **Simétrica** `[−v_max, v_max]` (`search_mode`), medida en simulación (D18) | `VelocityParams`, `config/falconscan.yaml` |
+| Reinicio del estimador | Escaneo vacío aislado se salta (`empty_reset_scans`), reinicio en FIN (D17) | `core/estimator.py`, `VelocityPipeline` |
+| Velocidad de paso 5–10 km/h (`pass_v_max_mps = 2.78`) | **Implementada** | `config/falconscan.yaml`, `VelocityParams` |
+| Salidas `/pass_state` y `/pass_event`; `pass_id`, `direction` y `advance_mps` en `VelocityEstimate` | **Implementadas**, en el marco mundo (D20) | `velocity_node.py`, `falconscan_interfaces/msg/` |
+| Flecha 0° al piso como nominal (`angle_offset_rad = +π/2`) | **Implementada** en el LiDAR de velocidad y en los dos simuladores (nadir en ROS 180°); el `volume_node` sigue con −π/2 hasta verificar el montaje del transversal | `config/falconscan.yaml`, `sim/lidar_sim.py`, `falconscan_volume/sim/portico_sim.py` |
 | Pasos 1–3 de la calibración: H fijo, ajuste `(b, α)`, estados OK / CORREGIDO / FALLA, avisos | **Implementados como herramienta** del visor, no como máquina de encendido | `core/calibration.py`, pestaña «Calibración» |
-| Tolerancias `cal_offset_tol_*`, `cal_angle_tol_*` | **Implementadas** | `VelocityParams`, `config/velocity.yaml` |
-| Máquina de calibración (C1–C14), supervisor, `/calibration_state`, `/system_state`, `recal_after_loss_s` | Pendiente | — |
+| Tolerancias `cal_offset_tol_*`, `cal_angle_tol_*` | **Implementadas** | `VelocityParams`, `config/falconscan.yaml` |
+| Máquina de calibración (C1–C14), supervisor, `/calibration_state`, `/system_state`, `recal_after_loss_s` | Pendiente (compartida con el LiDAR de volumen) | — |
 | Perfil de piso por celda `z_piso(x)`, clase PLANO / IRREGULAR, bandera `PISO_IRREGULAR` | Pendiente | `core/geometry.py`, `core/calibration.py` |
 
 ## Supervisor (nivel superior)
@@ -84,7 +83,7 @@ porque pudieron moverlo.
   de 0° del sensor es el **rayo ROS 180°**, no el ROS 0°. Con la flecha al piso, el rayo hacia
   abajo es ROS 180° y el offset nominal es
   `angle_offset_rad = −π/2 − angle_direction · π` (= **+π/2** con `angle_direction = 1`).
-  `velocity.yaml` y `VelocityParams` ya usan +π/2. Antes tenían −π/2, que equivale a montar la
+  `falconscan.yaml` y `VelocityParams` ya usan +π/2. Antes tenían −π/2, que equivale a montar la
   **marca 180°** al piso. El simulador también publica con el nadir en ROS 180°, así que
   simulador y sensor real comparten la geometría nominal. El visor muestra los dos ángulos
   (ROS y marca) en «Rayo hacia abajo».
@@ -316,7 +315,7 @@ Cómo se usa la calibración en operación:
 
 ### Parámetros de calibración
 
-Se agregan a `config/velocity.yaml`, siguiendo la convención del repo (floats con punto
+Se agregarán a `config/falconscan.yaml`, siguiendo la convención del repo (floats con punto
 decimal, con prueba de correspondencia).
 
 | Parámetro | Defecto | Unidad | Justificación del valor inicial |
@@ -396,7 +395,7 @@ hoy la máquina arranca sin esperar una calibración.
 |---|---|---|
 | Velocidad de paso | **5–10 km/h = 1.39–2.78 m/s** | Equipo (2026-10-21). Se limita para favorecer el escaneo |
 | Frecuencia de escaneo | 10 Hz (Δt = 0.1 s) | S2E unidad 1 medido: 10.01 Hz, σ Δt = 1.4 ms (prueba de pared, 2026-10-20) |
-| Largo de la ROI | 6.0 m (`roi_x_min_m = -3`, `roi_x_max_m = 3`) | `config/velocity.yaml` |
+| Largo de la ROI | 6.0 m (`roi_x_min_m = -3`, `roi_x_max_m = 3`) | `config/falconscan.yaml` |
 | Largo del camión | 7.5 m (simulador) … ~10 m (doble troque) | `sim/lidar_sim.py`; **medir** |
 | Sentido de circulación | **cualquiera** (+x o −x); se determina en cada paso | Equipo (2026-10-21) |
 | Un camión a la vez | sí | Acuerdos del MVP |
@@ -429,47 +428,32 @@ Con el sentido fijo se define la **rapidez de avance** de cada escaneo:
 - Es positiva cuando el camión avanza en su propio sentido y negativa si retrocede.
 - **No es `|v|`**: si el camión se detiene y retrocede un poco, `|v|` sumaría ese retroceso como
   avance y el Δx del volumen saldría inflado.
-- El LiDAR de volumen integra `Δx = sentido · displacement_m`, así que una reversa resta.
+- El LiDAR de volumen integra `velocity_mps` en `mid_stamp` (`falconscan_volume/core/odometry.py`)
+  en el sentido del paso, así que una reversa resta. No se suma `displacement_m` (los intervalos se solapan).
 
-**Propuesta original de búsqueda:** pasarle el sentido al estimador para que la correlación
-busque en `sentido · [v_min_mps, v_max_mps]`, con el mismo ancho que antes. Antes de conocer el
-sentido, o en el caso ambiguo, buscar en el rango simétrico.
+**El sentido también se le pasa al estimador** (implementado en `VelocityPipeline`). Cómo se usa
+depende de `search_mode`; quedó **"simetrica"** por defecto (decisión del 2026-10-24, abajo).
+Propuesta original:
+- Hoy la búsqueda es asimétrica: `v ∈ [v_min_mps, v_max_mps] = [−0.5, 6.0]` m/s. Un camión que
+  entra por `x_max` (v ≈ −2 m/s) queda **fuera de la búsqueda**: el estimador daría
+  `AT_SEARCH_LIMIT` o un pico falso.
+- **Propuesta:** con `sentido` conocido, la búsqueda pasa a ser `sentido · [v_min_mps, v_max_mps]`.
+  Se mantiene el mismo ancho, así que el riesgo de ambigüedad no aumenta.
+- Antes de conocer el sentido (`ENTRANDO`, durante el `WARMING_UP` del estimador) o en el caso
+  ambiguo, se busca en el rango simétrico `[−v_max_mps, v_max_mps]`.
+- Esto modifica el algoritmo: se mide con `tools/evaluate_sim.py` en los dos sentidos (debe dar
+  el mismo error en +x y en −x) y se compara contra usar siempre el rango simétrico.
 
-**Lo implementado (D13):** búsqueda **simétrica siempre**, `v_min_mps = −6.0` y
-`v_max_mps = 6.0`. Con la búsqueda anterior, `[−0.5, 6.0]`, un camión hacia −x quedaba fuera del
-rango y no daba ninguna velocidad válida. `tools/evaluate_sim.py` ahora incluye casos en
-sentido contrario. Resultados (**simulador**, antes → después):
+Medición de la búsqueda simétrica (`tools/evaluate_sim.py`, **simulador**, 2026-10-21, antes →
+después de pasar de `[−0.5, 6]` a simétrica): hacia +x sin cambios; hacia −x a 1.5 / 3 / 5 m/s,
+0 % → 73 / 71 / 67 % de escaneos válidos con sesgo +0.008 / +0.010 / +0.009 m/s; «frena 3 → 0.6
+m/s» 73 → 92 % (el límite de −0.5 m/s cortaba la reversa). Coincide con la medición de Martín
+del 2026-10-24 (D18).
 
-| Caso | Válidos | Sesgo | RMSE |
-|---|---|---|---|
-| +x, 0.3–5 m/s | sin cambio (87–88 % / 82 / 78 / 78 / 75 %) | sin cambio | sin cambio |
-| −x, −1.5 / −3 / −5 m/s | 0 % → 73 / 71 / 67 % | +0.008 / +0.010 / +0.009 m/s | 0.026 / 0.017 / 0.026 m/s |
-| frena 3 → 0.6 m/s | 73 → 92 % | −0.012 → −0.007 m/s | 0.024 → 0.023 m/s |
-| cómputo | ~5 → ~7.7 ms/escaneo | | |
-
-Duplicar las posiciones candidatas **no** aumentó los picos falsos en el simulador. Por eso no se
-implementó la búsqueda según el sentido: el estimador tendría que conocer el estado de la máquina
-y no hubo una mejora que medir. Queda como opción si los rosbag reales muestran picos falsos (ver
-«Pendiente de decidir»). En −x hay algo menos de escaneos válidos que en +x porque la volqueta
-simulada entra con la compuerta por delante y el perfil de entrada es distinto. Hay que
-confirmarlo con rosbag reales.
-
-Detalles de la implementación del sentido:
-- Entrada ambigua: el sentido se decide con la mediana de las primeras 3 velocidades OK
-  (`N_V_SENTIDO`). Mientras tanto `direction = 0`. El INICIO puede salir con 0, porque en T5 el
-  estimador suele estar todavía en `WARMING_UP`.
-- `PassTracker.direction` da el sentido del paso abierto en cualquier momento, para que el
-  volumen integre `Δx` durante el paso.
-- Si al cerrar no hay sentido (ninguna velocidad OK), se marcan `ENTRADA_FUERA_DE_BORDE` y
-  `SALIDA_FUERA_DE_BORDE`.
-- Con `pass_both_directions: false` el sentido es siempre +1. Solo cuenta el borde de `x_min`, y
-  el sentido contrario queda con banderas.
-
-*Referencia de signo.* Todo el núcleo trabaja en +x del marco mundo. Lo que se publica y se
-muestra con signo (`velocity_mps`, `v_median_mps`, `direction`) lleva la referencia elegida por
-el usuario, `invert_velocity_sign` (casilla «Invertir referencia» en el visor). Por defecto,
-positivo = hacia +x. La **rapidez de avance** (`advance_*`) no depende de esa referencia.
-Cambiarla no toca la geometría ni la ROI y no reinicia la máquina.
+*Referencia de signo (D20).* Núcleo, nodos y mensajes van en +x del marco mundo. La referencia
+del usuario, `invert_velocity_sign` (casilla «Invertir referencia» en el visor), solo cambia lo
+que se **muestra** (`with_sign`): el volumen integra `velocity_mps` tal como sale. `PassEvent.v_*`
+es la rapidez de avance (positiva en los dos sentidos) y `direction` el sentido en el marco mundo.
 
 ### Estados
 
@@ -498,7 +482,7 @@ Variables:
 - Paso: `pass_id`, `sentido`, `ext_inicial`, `ext_final`.
 - Acumuladores de calidad: n escaneos, n OK, velocidades OK (con signo), n huecos, n reversa.
 
-### Parámetros (modificables en `config/velocity.yaml`)
+### Parámetros (modificables en `config/falconscan.yaml`, sección `velocity_node`)
 
 Se agregan a `VelocityParams` **y** al YAML (floats con punto decimal).
 
@@ -516,11 +500,11 @@ Se agregan a `VelocityParams` **y** al YAML (floats con punto decimal).
 | `pass_reverse_v_mps` | -0.2 | m/s | Un escaneo OK con `v_avance` por debajo de esto cuenta como reversa (retroceso respecto al sentido del paso). |
 | `pass_reverse_scans` | 3 | escaneos | Escaneos de reversa (no necesariamente seguidos) para levantar la bandera. |
 | `pass_min_valid_fraction` | 0.6 | — | Fracción mínima de escaneos `OK` dentro del paso. Provisional: hoy el simulador da 75–80 % (67–73 % en −x). |
-| `pass_both_directions` | true | — | **Implementado.** `false` = solo +x; el sentido contrario queda con banderas. |
-| `invert_velocity_sign` | false | — | **Implementado.** Referencia de signo de lo publicado: `false` = positivo hacia +x. No cambia la lógica. |
+| `invert_velocity_sign` | false | — | **Implementado, solo para mostrar** (visor, HMI; D20). Los mensajes van en el marco mundo. |
 
-Del estimador: `v_min_mps` pasó a **−6.0** (búsqueda simétrica, ver «Sentido de circulación») y
-`v_max_mps` sigue en 6.0. Con 5–10 km/h, bajar los dos a ±4 m/s reduciría la ambigüedad del pico
+`pass_both_directions` (rama de Juan Manuel) se retiró en la integración: la máquina siempre mide
+los dos sentidos. Del estimador: la búsqueda es simétrica con `search_mode = "simetrica"` (D18;
+`v_min_mps = −0.5` solo cuenta con "sentido" o "fija") y `v_max_mps` sigue en 6.0. Con 5–10 km/h, bajar los dos a ±4 m/s reduciría la ambigüedad del pico
 y el cómputo, pero es otro cambio del algoritmo: va aparte y se mide con `tools/evaluate_sim.py`.
 
 ### Diagrama
@@ -630,35 +614,25 @@ un registro). `PISO_IRREGULAR` es informativa y no invalida el paso.
 ### Salidas ROS
 
 **Implementadas en `velocity_node`:**
+Todo en el marco mundo (+x); `invert_velocity_sign` no se aplica a los mensajes (D20).
 - `/pass_state` (`falconscan_interfaces/PassState`): `state`, `state_text`, `pass_id`,
-  `pass_open`, `ready`. Se publica en cada escaneo. Sin escaneos, se publica cuando el estado
-  cambia (timer cada `scan_timeout_s / 5`), para que la HMI vea `SIN_DATOS`.
-- `/pass_event` (`falconscan_interfaces/PassEvent`, QoS confiable, profundidad 50), solo en
-  INICIO y FIN, con:
-  - `pass_id`, `event`, `valid`, `t_start`, `t_end`, `duration_s`;
-  - `flags` (máscara con constantes `FLAG_*` = `PassFlag`) y `flag_names`;
-  - `n_gaps`, `n_scans`, `n_valid`;
-  - `v_median_mps`, `v_min_mps`, `v_max_mps` y `direction` (+1/−1/0), **con signo, en la
-    referencia `invert_velocity_sign`**;
+  `pass_open`, `direction`, `ready`. Se publica en cada escaneo. Sin escaneos, se publica cuando
+  el estado cambia (timer cada `scan_timeout_s / 5`), para que la HMI vea `SIN_DATOS`.
+- `/pass_event` (`falconscan_interfaces/PassEvent`, transient local, profundidad 50: el
+  `volume_node` que arranca tarde recibe los últimos), solo en INICIO y FIN, con:
+  - `pass_id`, `event`, `event_text`, `valid`, `direction`, `t_start`, `t_end`, `duration_s`;
+  - `flags` (lista de nombres; vacía = sin banderas);
+  - `n_gaps`, `n_scans`, `n_valid` (escaneos ocupados, desde ENTRANDO);
+  - `v_median_mps`, `v_min_mps`, `v_max_mps`: **rapidez de avance** `v_avance = sentido · v`,
+    positiva en los dos sentidos (negativa = reversa);
   - las extensiones inicial y final, en el marco mundo.
-- `pass_id` en `VelocityEstimate.msg`: id del paso abierto (`EN_PASO`/`SALIENDO`), 0 fuera.
-  Los escaneos de `ENTRANDO` salen con 0 aunque luego se confirme el paso; quien integre
-  volumen debe incluir desde `PassEvent.t_start`. `velocity_mps`, `velocity_filtered_mps`,
-  `displacement_m` y `shift_bins` van con signo en la misma referencia.
+- En `VelocityEstimate.msg`: `pass_id` del paso abierto (`EN_PASO`/`SALIENDO`; el escaneo que
+  cierra el paso lleva el del FIN), 0 fuera; `direction` y `advance_mps` (= sentido · v, NaN si
+  no es válida). Los escaneos de `ENTRANDO` salen con 0 aunque luego se confirme el paso; quien
+  integre volumen debe incluir desde `PassEvent.t_start`. Para integrar posición: `velocity_mps`
+  en `mid_stamp`, como `falconscan_volume/core/odometry.py`.
 - `test/test_ros_msgs.py` verifica que las constantes de los mensajes coinciden con el núcleo
-  y que la referencia invertida cambia los signos e intercambia mínimo y máximo.
-- Probado con `velocity_node` y el simulador (que alterna sentidos con
-  `alternate_direction:=true`): paso #1 con `direction = 1` y +1.49 m/s, paso #2 con
-  `direction = −1` y −1.49 m/s, los dos válidos. Cortando el simulador a mitad de paso
-  aparecen FIN con `SENSOR_PERDIDO` y `SIN_DATOS` publicado desde el timer.
-
-- **Rapidez de avance** (implementada): `PassEvent.advance_median_mps`, `advance_min_mps` y
-  `advance_max_mps` (`v_avance`, positiva en los dos sentidos), y en `VelocityEstimate` los campos
-  `direction` (en la referencia de signo) y `advance_mps` (= sentido · v, NaN si no es válida).
-  Para el volumen: `Δx = advance_mps · dt_s`. Se conservan además las velocidades con signo,
-  a pedido del usuario.
-- Probado de punta a punta (`velocity_node` y el simulador alternando sentidos): pasos con
-  `direction` +1 / −1 desde el INICIO y avance 1.49 m/s en los dos.
+  y la conversión de los eventos.
 
 **Pendientes de la propuesta:**
 - `/system_state`: `mode` (CALIBRACION / FALLA_CAL / OPERACION) y `ready`.
@@ -675,8 +649,7 @@ Todo en Python puro dentro de `core/`, con pruebas. Los nodos solo convierten me
 |---|---|---|
 | `core/calibration.py` | `fit_floor` (selección RANSAC + TLS), `fit_floor_offset` (`(ν, b)` con H fijo), `calibrate_mount` (estados y avisos), `detect_direction` | **Implementado** (herramienta del visor). Falta el perfil `z_piso(x)` y la clase PLANO / IRREGULAR |
 | `core/calibration.py` | `CalibrationRoutine.update(t, scan)` y `.tick(ahora)` → `(estado, resultado)` | Pendiente. Puede vivir junto a lo anterior en vez de en un `core/floor.py` aparte |
-| `core/pass_tracker.py` | `PassTracker.update(t, ocupado, ext, est)` y `.tick(ahora)` → eventos; sentido por paso | **Implementado** |
-| `core/pipeline.py` | `VelocityPipeline`: estimador + tracker con la política de `reset()`; lo usan el nodo, el visor y las pruebas | **Implementado** |
+| `core/pass_tracker.py` | `PassTracker.update(t, est, now)` y `.tick(now)` → eventos; sentido por paso. `VelocityPipeline`: estimador + tracker (sentido al estimador, reinicio en FIN); lo usan los dos nodos, el visor y las pruebas | **Implementado** |
 | `core/supervisor.py` | Modo del sistema; al terminar la calibración reconstruye `VelocityEstimator` con la geometría calibrada | Pendiente |
 | `core/geometry.py` | `height_profile` acepta un piso por celda (arreglo) además del escalar `floor_z` | Pendiente |
 
@@ -684,7 +657,7 @@ Pruebas existentes: `test/test_pass_tracker.py` (transiciones, banderas, ambos s
 referencia invertida y extremo a extremo con el simulador, incluidos dos camiones seguidos en
 sentidos alternos), `test/test_calibration.py` (piso con pendiente y sensor girado, pared
 cercana, cinta mal medida, objeto en la ROI, movimiento, rayos sin retorno, sentido),
-`test/test_ros_msgs.py`. En total, 91 pruebas del paquete pasan.
+`test/test_ros_msgs.py`.
 `tools/evaluate_passes.py` evalúa la máquina con camiones seguidos en ambos sentidos: pasos
 perdidos y fragmentados, sentido mal asignado y error de rapidez de avance.
 
@@ -707,29 +680,27 @@ el soporte.
 
 ## Cambio de `reset()` del estimador (implementado)
 
-Antes, `VelocityEstimator` borraba su historial en cada escaneo vacío. Ahora lo coordina
-`VelocityPipeline` (`core/pipeline.py`):
-- en `ENTRANDO`, `EN_PASO` y `SALIENDO`, los escaneos vacíos se saltan sin borrar el historial
-  (`process(scan, keep_history=True)`), y la verificación `BAD_DT` acota los huecos largos;
-- el estimador se reinicia al salir de esos estados: FIN, falsa entrada (T4) o pérdida del sensor;
-- fuera de un paso se comporta como antes.
+**Implementado el 2026-10-24 (Martín):** un escaneo vacío se salta sin borrar el historial ni
+volver a `WARMING_UP`; `VelocityEstimator.reset()` solo se llama tras `empty_reset_scans` (5)
+vacíos seguidos, y la verificación `BAD_DT` acota los huecos largos (D17). `VelocityPipeline`
+además reinicia el estimador en FIN.
 
-Medición (`tools/evaluate_passes.py`, **simulador**, 6 camiones alternando sentido por caso;
-`--reset-on-empty` corre la política anterior):
+En la rama de Juan Manuel (2026-10-21, D14) se había hecho lo mismo de otra forma: conservar el
+historial mientras el paso está activo (ENTRANDO / EN_PASO / SALIENDO). En la integración
+(2026-10-27) se compararon las dos con `tools/evaluate_passes.py` (**simulador**, 6 camiones
+alternando sentido por caso). Queda la de Martín: igual o mejor en todos los casos.
 
-| Caso | Pasos válidos, antes → ahora | Escaneos con v OK, antes → ahora | Fragmentados |
+| Caso | Escaneos con v OK, D14 → D17 | Pasos válidos | Fragmentados |
 |---|---|---|---|
-| 5 / 7.2 / 10 km/h, sin pérdidas | 6 → 6 | igual (79 / 76 / 75 %) | 0 |
-| pérdida de rayos 15 % / 30 % | 5 → 5 / 0 → 0 | igual (63 / 50 %) | 0 |
-| 5 % de escaneos ciegos | 5 → 6 | 66 → 76 % | 0 |
-| 10 % de escaneos ciegos | 1 → 6 | 51 → 74 % | 0 |
-| 20 % de escaneos ciegos | 0 → 6 | 36 → 74 % | 0 |
-| 10 km/h, 10 % ciegos | 1 → 6 | 44 → 70 % | 0 |
+| 5 / 7.2 / 10 km/h, sin pérdidas | 79 / 76 / 75 % → igual | 6 → 6 | 0 |
+| pérdida de rayos 15 % / 30 % | 63 / 50 % → 63 / 52 % | 5 / 0 → 5 / 0 | 0 |
+| 5 / 10 / 20 % de escaneos ciegos | 76 / 74 / 74 % → 77 / 74 / 76 % | 6 → 6 | 0 |
+| 10 km/h, 10 % ciegos | 70 % → 70 % | 6 → 6 | 0 |
 
 «Escaneo ciego» = el camión no devuelve nada en ese escaneo (carrocería oscura o mojada) y solo
-se ve el piso. Las pérdidas por rayo del simulador casi nunca vacían un escaneo entero, por eso
-en esos casos no hay diferencia. Con 30 % de pérdida de rayos ningún paso es válido en las dos
-políticas: `POCOS_VALIDOS` (50 % < `pass_min_valid_fraction` = 60 %).
+se ve el piso. Con 30 % de pérdida de rayos ningún paso es válido en las dos: `POCOS_VALIDOS`
+(~50 % < `pass_min_valid_fraction` = 60 %). Antes de cualquiera de las dos, cada escaneo vacío
+reiniciaba el estimador: con 10 % de escaneos ciegos solo 1 de 6 pasos salía válido.
 
 ## Decisiones
 
@@ -759,21 +730,25 @@ políticas: `POCOS_VALIDOS` (50 % < `pass_min_valid_fraction` = 60 %).
 - **2026-10-21 (Juan Manuel):** alinear el código con las decisiones de este documento.
   Implementado (ver «Estado de implementación»).
 
+- **2026-10-24:** búsqueda de la correlación **simétrica** `[−v_max, v_max]`. Medido en
+  simulación en los dos sentidos: misma exactitud que la búsqueda según el sentido, sin
+  aumento de picos falsos, y sí mide la reversa (que el volumen necesita restar). Queda
+  `search_mode` ("simetrica" | "sentido" | "fija") para ablación.
+- **2026-10-24:** `PassTracker` implementado antes que la calibración (el volumen depende de
+  él). El reinicio del estimador se hace en FIN; `empty_reset_scans` sigue como respaldo.
+
 ## Pendiente de decidir
 
-1. **Búsqueda de la correlación** (medido en simulación; ver «Sentido de circulación»). La
-   búsqueda simétrica `[−6, 6]` m/s no empeoró ningún caso en +x y mide −x con 67–73 % de
-   válidos. **Recomendación:** dejarla simétrica y revisar con los primeros rosbag reales si
-   aparecen picos falsos (`AMBIGUOUS` o `IMPLAUSIBLE` de más). Solo entonces pasar a la búsqueda
-   según el sentido. Con 5–10 km/h también se podría bajar a ±4 m/s; es otro cambio y se mide
-   aparte.
-2. **Máquina de calibración al encender y supervisor** (decidido que existan; falta
-   implementarlos). La geometría (pasos 1–3) ya está en `core/calibration.py`. Faltan:
+1. ~~Búsqueda de la correlación~~ → decidido el 2026-10-24 (simétrica). Revisar con los primeros
+   rosbag reales si aparecen picos falsos (`AMBIGUOUS` o `IMPLAUSIBLE` de más); solo entonces
+   probar `search_mode = "sentido"`.
+2. Implementar la máquina de calibración y el supervisor (compartidos con el LiDAR de volumen).
+   La geometría (pasos 1–3) ya está en `core/calibration.py`. Faltan:
    - los estados C1–C14 con el timeout y REINTENTAR;
    - `/calibration_state` y `/system_state`;
    - `z_piso(x)` y la clase PLANO / IRREGULAR;
    - `recal_after_loss_s`;
-   - que `velocity_node` use los valores efectivos. Hoy usa los nominales del yaml hasta que la
-     calibración se aplique desde el visor, y eso solo afecta al visor.
+   - que los nodos usen los valores efectivos. Hoy usan los nominales del yaml; la calibración
+     aplicada desde el visor solo afecta al visor.
 3. Los umbrales de calibración (`cal_offset_tol_*`, `cal_angle_tol_*`, `cal_floor_*`) son
    provisionales hasta caracterizar el S2E real en el sitio.

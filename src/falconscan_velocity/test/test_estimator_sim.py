@@ -124,3 +124,30 @@ def test_robust_to_heavy_dropout():
     frac_ok, err = _metrics(_pass(TruckMotion(v=1.5), 18.0, cfg=cfg))
     assert frac_ok > 0.4
     assert abs(np.median(err)) / 1.5 < 0.02
+
+
+def _scans_with_gaps(motion, duration, empty_idx):
+    """Escaneos del simulador; los índices de `empty_idx` llegan vacíos (escaneo perdido)."""
+    sim = LidarSim(LidarSimConfig())
+    for k, (s, _) in enumerate(sim.run(motion, duration)):
+        if k in empty_idx:
+            s.ranges[:] = np.inf
+        yield k, s
+
+
+def test_isolated_empty_scan_does_not_restart_warmup():
+    # volqueta en plena ROI desde t = 0; un escaneo perdido en k = 20
+    est = VelocityEstimator(VelocityParams())
+    st = {k: est.process(s).status for k, s in _scans_with_gaps(TruckMotion(x0=3.0, v=1.5), 3.0, {20})}
+    assert st[20] == Status.NO_OBJECT
+    assert st[21] != Status.WARMING_UP
+    assert st[22] != Status.WARMING_UP
+
+
+def test_consecutive_empty_scans_reset_history():
+    p = VelocityParams()
+    gap = set(range(20, 20 + p.empty_reset_scans))
+    est = VelocityEstimator(p)
+    st = {k: est.process(s).status for k, s in _scans_with_gaps(TruckMotion(x0=3.0, v=1.5), 3.0, gap)}
+    k = 20 + p.empty_reset_scans
+    assert [st[k + i] for i in range(p.baseline_scans)] == [Status.WARMING_UP] * p.baseline_scans

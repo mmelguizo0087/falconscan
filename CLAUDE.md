@@ -9,10 +9,12 @@ el volumen de material del volco.
 ## Arquitectura del producto
 
 - **2 LiDAR en el pórtico:**
-  - **LiDAR de velocidad** (este repo, implementado): plano de escaneo vertical que contiene
-    el eje de avance. Estima cuánto avanzó el camión entre escaneos.
-  - **LiDAR de volumen** (pendiente): perfiles transversales de la carga. Volumen = Σ área(perfil) · Δx,
-    con Δx sacado del LiDAR de velocidad. **El error de velocidad se traslada 1:1 al volumen.**
+  - **LiDAR de velocidad** (implementado): plano de escaneo vertical que contiene el eje de
+    avance. Estima cuánto avanzó el camión entre escaneos; el `PassTracker` arma los pasos.
+  - **LiDAR de volumen** (implementado en simulación, 2026-10-24): perfiles transversales.
+    Volumen de la ENVOLVENTE = ∫ área(perfil) dx, con x integrada de la velocidad. Frente y
+    cola se ubican con el LiDAR de velocidad. **El error de velocidad se traslada 1:1 al
+    volumen.** El volumen de material (separar el volco y restar la tara) es la etapa siguiente.
 - Sensor de referencia: RPLIDAR S2E (dToF, 10 Hz), inferido del BOM. Verificar con la hoja de datos.
 - Hardware MVP: Raspberry Pi 5 (4 GB), HMI Nextion, alimentación 110–220 V, exportación a SD.
 - Software: ROS 2 (objetivo: Jazzy sobre Ubuntu 24.04), nodos en Python.
@@ -48,21 +50,28 @@ src/falconscan_velocity/        paquete ROS 2 (ament_python)
     geometry.py                 polar→xz, abanico de interés, perfil h(x) en malla espacial, segmentación
     correlation.py              NCC con máscara, subcelda, ambigüedad
     estimator.py                VelocityParams, VelocityEstimator, Status
-    pass_tracker.py             máquina de estados de paso (PassTracker, PassEvent, PassFlag)
-    pipeline.py                 VelocityPipeline: estimador + tracker con la política de reinicio (nodo y visor)
+    pass_tracker.py             PassTracker (pasos de camión) y VelocityPipeline (estimador + tracker)
     calibration.py              calibración con el piso: offset de rango y desvío de la flecha 0° (H = cinta)
   falconscan_velocity/sim/      simulador 2D (ray-casting de volqueta en movimiento)
   falconscan_velocity/velocity_node.py   /scan -> /velocity_estimate, /pass_state, /pass_event
   falconscan_velocity/sim_publisher.py   publica /scan simulado
-  config/velocity.yaml          parámetros (1:1 con VelocityParams)
+  config/falconscan.yaml        parámetros de LOS DOS nodos (velocity_node y volume_node)
   test/                         pytest; corre sin ROS
-src/falconscan_interfaces/      mensajes (VelocityEstimate, PassState, PassEvent)
-tools/evaluate_sim.py           matriz de ensayos en simulación (ablación)
-tools/evaluate_passes.py        máquina de paso en simulación: camiones en ambos sentidos, fragmentación
-docs/algoritmo_velocidad.md     decisiones de diseño + resultados + pendientes
-docs/maquina_estados_paso.md    máquinas de estados de calibración (al encender, propuesta) y operación (paso del camión, implementada)
+src/falconscan_volume/          paquete ROS 2 del LiDAR transversal (usa el núcleo de velocidad)
+  falconscan_volume/core/       section, odometry, integration, checks, reconstruction, reconstructor
+  falconscan_volume/sim/        simulador 3D del pórtico (los dos LiDAR, volquetas con volumen verdadero)
+  falconscan_volume/volume_node.py       reconstrucción 3D + volumen; sim_portico.py simula los dos LiDAR
+  launch/                       volume_sim (todo simulado + RViz), volume_lidar (A1/S2E real), portico
+  rviz/volumen.rviz
+src/falconscan_interfaces/      mensajes (VelocityEstimate, PassEvent, PassState, VolumeState, VolumeMeasurement)
+tools/evaluate_sim.py           matriz de ensayos de velocidad en simulación (ablación)
+tools/evaluate_passes.py        pasos en simulación: camiones en ambos sentidos, escaneos ciegos, fragmentación
+tools/evaluate_volume_sim.py    matriz de ensayos de volumen (simulador 3D)
 tools/visor_lidar/              GUI de pruebas (PyQt6 + pyqtgraph): sensor en vivo, prueba de paso,
-                                calibración de montaje, rosbags; `instalar.sh` crea el acceso directo del escritorio
+                                calibración de montaje, volumen 3D, rosbags; `instalar.sh` crea el acceso directo
+docs/algoritmo_velocidad.md     decisiones de diseño + resultados + pendientes
+docs/maquina_estados_paso.md    máquinas de calibración (pendiente) y operación (PassTracker, implementada)
+docs/maquina_estados_volumen.md reconstructor de volumen: estados, chequeos, parámetros, resultados
 docs/referencias/               reporte técnico original del método
 ```
 
@@ -71,11 +80,13 @@ docs/referencias/               reporte técnico original del método
 ```bash
 # Pruebas (sin ROS)
 cd src/falconscan_velocity && python3 -m pytest -q test
+cd src/falconscan_volume && python3 -m pytest -q test      # ~1–2 min (simulador 3D)
 
 # Matriz de ensayos en simulación; --set para ablación
 python3 tools/evaluate_sim.py
 python3 tools/evaluate_sim.py --set baseline_scans=1 --set deskew_iterations=0
-python3 tools/evaluate_passes.py                  # pasos; --reset-on-empty = política anterior
+python3 tools/evaluate_passes.py                           # pasos; --set empty_reset_scans=1 = reiniciar en cada vacío
+python3 tools/evaluate_volume_sim.py --reps 8              # volumen; --true-velocity, --plot rec.png
 
 # Con ROS 2 (en la RPi o en un PC con ROS)
 colcon build --symlink-install && source install/setup.bash
@@ -85,6 +96,13 @@ ros2 launch falconscan_velocity velocity_s2e.launch.py
 ros2 topic echo /velocity_estimate
 ros2 topic echo /pass_event      # INICIO/FIN de cada paso con banderas de calidad
 ros2 topic echo /pass_state      # estado de la máquina de paso y `ready` para la HMI
+# Pórtico completo simulado (los dos LiDAR) con RViz; reconstrucción en /volume/cloud y /volume/surface
+ros2 launch falconscan_volume volume_sim.launch.py speed_kmh:=7.5 direction:=0
+ros2 topic echo /volume/measurement
+# LiDAR de volumen real (A1 por serie o S2E por UDP) + volume_node
+ros2 launch falconscan_volume volume_lidar.launch.py lidar:=a1 rviz:=true
+# Visor de pruebas (en la RPi también hay acceso directo en el escritorio)
+tools/visor_lidar/visor_lidar.sh
 ```
 
 ## Convenciones (respetarlas)
@@ -93,20 +111,24 @@ ros2 topic echo /pass_state      # estado de la máquina de paso y `ready` para 
   una sombra no es piso.
 - **El núcleo no depende de ROS.** Toda la lógica nueva va en `core/` con pruebas; los nodos solo
   convierten mensajes.
-- **Parámetros:** un parámetro nuevo se agrega a `VelocityParams` **y** a `config/velocity.yaml`
-  (hay una prueba que lo verifica, incluido el tipo: floats con punto decimal).
+- **Parámetros:** un parámetro nuevo se agrega a `VelocityParams` (o `VolumeParams`) **y** a su
+  sección de `config/falconscan.yaml` (hay pruebas que lo verifican, incluido el tipo: floats con
+  punto decimal). Los dos LiDAR usan los mismos nombres de montaje/calibración.
 - **Cada mejora se mide.** Toda variante (filtro, Hampel, Kalman, gradiente…) entra solo si
   `tools/evaluate_sim.py` (y después los rosbag reales) muestran una mejora cuantitativa.
   Introducir los cambios de a uno (reporte §12).
-- **Signo de la velocidad:** estimador y máquina de estados trabajan siempre en +x del marco mundo
-  y miden ambos sentidos. La referencia del usuario (`invert_velocity_sign`) se aplica solo al
-  publicar o mostrar (`with_sign`); no mezclar velocidades con y sin referencia en el núcleo.
+- **Signo de la velocidad:** núcleo, nodos y mensajes ROS trabajan siempre en +x del marco mundo
+  y miden ambos sentidos. `invert_velocity_sign` es **solo para mostrar** (visor, HMI) con
+  `with_sign`; nunca aplicarlo a lo que se publica, porque el volumen integra `velocity_mps` (D20).
 - **Geometría nominal:** la flecha 0° del S2E apunta al piso = rayo ROS 180° (`angle_offset_rad =
-  +π/2`), también en el simulador. `mount_height_m` es la cinta (verdadera); la calibración da
-  valores efectivos (offset de rango, rayo hacia abajo) y no sobrescribe el yaml.
-- **Para integrar posición o volumen** usar `advance_mps · dt_s` (rapidez de avance en el sentido del
-  paso: no depende de la referencia de signo y una reversa resta) con `mid_stamp` (header.stamp del
-  mensaje). `velocity_filtered_mps` (EMA) tiene retardo y es solo para mostrar.
+  +π/2`), también en los simuladores (2D y pórtico 3D). `mount_height_m` es la cinta (verdadera);
+  la calibración da valores efectivos (offset de rango, rayo hacia abajo) y no sobrescribe el yaml.
+  El yaml es el del sensor FÍSICO (H de la cinta, rayos invertidos de sllidar_ros2, calibración de
+  la unidad 1); con los simuladores los launch aplican `SIM_VELOCITY_OVERRIDES` (`falconscan_velocity/sim`).
+- **Para integrar posición o volumen** integrar `velocity_mps` en `mid_stamp` (header.stamp del
+  mensaje), como `falconscan_volume/core/odometry.py`. **No sumar `displacement_m`**: con
+  `baseline_scans = 3` los intervalos se solapan y se contaría tres veces. `velocity_filtered_mps`
+  (EMA) tiene retardo y es solo para mostrar.
 - Código, comentarios y documentación en español.
 - Los resultados del simulador **no** son evidencia de desempeño de campo; decirlo siempre que
   se reporten.
@@ -120,6 +142,7 @@ ros2 topic echo /pass_state      # estado de la máquina de paso y `ready` para 
 
 ## Siguiente trabajo técnico
 
-Ver "Pendientes" en `docs/algoritmo_velocidad.md`. En orden: grabar rosbag reales con el S2E →
-calibración de montaje con objeto patrón → referencia independiente de velocidad → integración
-de posición x(t) para el LiDAR de volumen.
+Ver "Pendientes" en `docs/algoritmo_velocidad.md` y `docs/maquina_estados_volumen.md`. En orden:
+segundo LiDAR conectado (IP del 2.º S2E) y rosbag reales de los dos → calibración (máquina
+CAL_* compartida por los dos LiDAR) con objeto patrón → referencia independiente de velocidad →
+volumen de material (segmentar el volco y restar la tara).

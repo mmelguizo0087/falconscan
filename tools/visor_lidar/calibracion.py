@@ -3,7 +3,7 @@
 Pasos: (1) datos del montaje (altura con cinta y, si se conoce, pendiente del piso),
 (2) captura del piso vacío -> altura perpendicular, rayo hacia abajo e inclinación compensada,
 (3) opcional: sentido de avance con un objeto del lado de entrada, (4) aplicar / guardar en
-velocity.yaml con una ficha de calibración. El cálculo está en core/calibration.py.
+falconscan.yaml con una ficha de calibración. El cálculo está en core/calibration.py.
 """
 from __future__ import annotations
 
@@ -108,14 +108,14 @@ class PanelCalibracion(QtWidgets.QWidget):
         self.c_zmax.setToolTip("roi_z_max_m: los puntos más altos que esto sobre el piso se descartan (soporte,\n"
                                "estructura, polvo o insectos junto al sensor). Ponlo por debajo del sensor y por\n"
                                "encima del vehículo más alto. Es el mismo campo de «Prueba de paso» (se aplica\n"
-                               "allí al cambiarlo); para dejarlo en velocity.yaml usa «Guardar en yaml» allí.")
+                               "allí al cambiarlo); para dejarlo en falconscan.yaml usa «Guardar en yaml» allí.")
         f.addRow("Altura máx. considerada", self.c_zmax)
         self.c_fan = _spin(1, 360, 1, 5, "°")
         self.c_fan.setValue(360)
         self.c_fan.setToolTip("fan_angle_rad: apertura total del abanico de interés, centrado en la vertical hacia\n"
                               "abajo. Los rayos de fuera (soporte, techo, paredes) no se usan. 360° = sin filtro.\n"
                               "Para ver el piso hasta |x| = X hace falta más de 2·atan(X / H). Es el mismo campo\n"
-                              "de «Prueba de paso» (el centro se ajusta allí); para dejarlo en velocity.yaml usa\n"
+                              "de «Prueba de paso» (el centro se ajusta allí); para dejarlo en falconscan.yaml usa\n"
                               "«Guardar en yaml» allí.")
         f.addRow("Abanico (apertura)", self.c_fan)
         # Campos compartidos con «Prueba de paso»: nombre -> (widget, factor de visualización, etiqueta)
@@ -261,7 +261,7 @@ class PanelCalibracion(QtWidgets.QWidget):
         w_paso.setValue(w.value())
         paso.aplicar(silencioso=True)
         self.v._log(f"{etiqueta} = {w.value():g} {w.suffix().strip()} (aplicado en Prueba de paso; "
-                    "sin guardar en velocity.yaml).", "aviso")
+                    "sin guardar en falconscan.yaml).", "aviso")
         self._mostrar()
 
     def _abanico(self) -> tuple[float, float]:
@@ -519,7 +519,7 @@ class PanelCalibracion(QtWidgets.QWidget):
                 guardar_params(paso.yaml_ruta, replace(antes, mount_height_m=c.height_m + antes.floor_z_m),
                                ["mount_height_m"])
                 paso.params_yaml = cargar_params(paso.yaml_ruta)
-                self.v._log(f"velocity.yaml: mount_height_m = {c.height_m + antes.floor_z_m:.3f} m", "ok")
+                self.v._log(f"falconscan.yaml: mount_height_m = {c.height_m + antes.floor_z_m:.3f} m", "ok")
         self.carpeta.mkdir(parents=True, exist_ok=True)
         ruta = self.carpeta / f"calibracion_{dt.datetime.now():%Y%m%d_%H%M%S}.json"
         deg = math.degrees

@@ -126,8 +126,13 @@ def object_mask(h: np.ndarray, h_threshold: float, min_run: int = 1) -> np.ndarr
 
 def object_extent(h: np.ndarray, grid: ProfileGrid, h_threshold: float,
                   min_run: int = 1) -> tuple[float, float] | None:
-    """(x_inicio, x_fin) de las celdas ocupadas por el objeto, o None."""
+    """(x_inicio, x_fin) del objeto, o None: CENTROS de las celdas ocupadas extremas.
+
+    El borde real cae en algún punto de la celda extrema; su centro es la estimación sin sesgo.
+    Con los bordes de celda el largo salía +1 celda (2 cm) más largo en promedio, y el volumen,
+    que ubica frente y cola con esta extensión, +0.3 % (simulación, 2026-10-24).
+    """
     idx = np.flatnonzero(object_mask(h, h_threshold, min_run))
     if idx.size == 0:
         return None
-    return grid.x_min + idx[0] * grid.dx, grid.x_min + (idx[-1] + 1) * grid.dx
+    return grid.x_min + (idx[0] + 0.5) * grid.dx, grid.x_min + (idx[-1] + 0.5) * grid.dx
