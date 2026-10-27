@@ -8,8 +8,8 @@ import math
 import numpy as np
 import pytest
 
-from falconscan_velocity.core import (VelocityEstimator, VelocityParams, Scan, calibrate_mount,
-                                      detect_direction, fit_floor, offset_from_down)
+from falconscan_velocity.core import (MountGeometry, VelocityEstimator, VelocityParams, Scan, calibrate_mount,
+                                      detect_direction, fit_floor, object_position, offset_from_down)
 from falconscan_velocity.core.calibration import CORREGIDO, FALLA, OK
 
 N_RAYOS = 3240          # S2E con angle_compensate: 1/9°
@@ -196,3 +196,52 @@ def test_offset_nominal_de_la_flecha_al_piso():
     """Flecha 0° = rayo ROS 180° hacia abajo -> +π/2 (valor del yaml y de VelocityParams)."""
     assert offset_from_down(math.pi, 1) == pytest.approx(math.pi / 2)
     assert VelocityParams().angle_offset_rad == pytest.approx(math.pi / 2)
+
+
+# ---------------------------------------------------------------- LiDAR transversal y relación (D24)
+# La misma rutina calibra el LiDAR transversal: su plano es y–z en vez de x–z. Las pruebas usan la
+# misma escena (la «X» del marco gravedad hace de y) con la ROI lateral desplazada por y_offset_m.
+
+def test_transversal_desplazado_usa_la_roi_lateral_relativa_al_sensor():
+    """Sensor a y_offset = +0.8 m del eje: la ROI y ∈ [−2, 2] es [−2.8, 1.2] en su marco."""
+    r = escena(Hv=2.5, giro_deg=1.0, offset=0.012, n=5)
+    y_off = 0.8
+    c = calibrate_mount(r, ANG, 2.5, ABAJO, roi_x_m=(-2.0 - y_off, 2.0 - y_off), roi_z_max_m=4.5,
+                        object_h_threshold_m=0.4)
+    assert c.range_offset_m == pytest.approx(0.012, abs=0.002)
+    assert math.degrees(c.arrow_deviation_rad) == pytest.approx(-1.0, abs=0.05)
+    assert c.roi_coverage > 0.95 and not c.failed
+
+
+@pytest.mark.parametrize("sentido", [1, -1])
+def test_lado_izquierdo_del_transversal(sentido):
+    """Objeto a la izquierda del carril (mirando hacia +x) -> debe quedar en +y: entry_side = +1."""
+    caja = [(0.9, 0.0, 0.9, 0.6), (0.9, 0.6, 1.4, 0.6), (1.4, 0.6, 1.4, 0.0)]     # izquierda: Y > 0
+    vacio = escena(Hv=2.5, sentido=sentido, n=3)
+    con = escena(Hv=2.5, sentido=sentido, segmentos=caja, n=3)
+    c = calibrate_mount(vacio, ANG, 2.5, ABAJO)
+    d, ym, n = detect_direction(vacio, con, ANG, c.down_angle_rad, entry_side=+1)
+    assert d == sentido and n > 20
+    g = MountGeometry(c.perp_height_m, offset_from_down(c.down_angle_rad, d), d)
+    y, _, _ = object_position(vacio, con, ANG, g)
+    assert 0.9 <= y <= 1.4                            # en +y (lado izquierdo), dentro de la caja
+
+
+def test_posicion_del_objeto_en_el_cruce_de_los_planos():
+    """Poste de 10 cm a X = +0.25 m: el LiDAR lo ve ahí, con su altura, en el marco calibrado."""
+    poste = [(0.20, 0.0, 0.20, 1.5), (0.20, 1.5, 0.30, 1.5), (0.30, 1.5, 0.30, 0.0)]
+    vacio = escena(Hv=3.0, giro_deg=2.0, offset=0.02, n=5)
+    con = escena(Hv=3.0, giro_deg=2.0, offset=0.02, segmentos=poste, n=5)
+    c = calibrate_mount(vacio, ANG, 3.0, ABAJO)
+    g = MountGeometry(c.perp_height_m, c.angle_offset_rad, c.angle_direction, x_offset_m=0.0)
+    x, h, n = object_position(vacio, con, ANG, g, range_offset_m=c.range_offset_m)
+    assert x == pytest.approx(0.25, abs=0.06) and h == pytest.approx(1.5, abs=0.03) and n >= 5
+    # Con el desplazamiento del montaje, la posición sale en el marco del carril
+    g2 = MountGeometry(g.height_m, g.angle_offset_rad, g.angle_direction, x_offset_m=0.4)
+    assert object_position(vacio, con, ANG, g2, range_offset_m=c.range_offset_m)[0] == pytest.approx(x + 0.4)
+
+
+def test_posicion_sin_objeto_es_none():
+    v = escena(Hv=3.0, n=3)
+    c = calibrate_mount(v, ANG, 3.0, ABAJO)
+    assert object_position(v, v, ANG, c.geometry) is None

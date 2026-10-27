@@ -32,7 +32,7 @@ sys.path[:0] = [str(ROOT / "tools"), str(ROOT / "src" / "falconscan_volume"), st
 
 from falconscan_volume.sim import DumpTruck3D, Motion3D, PorticoSim, PorticoSimConfig  # noqa: E402
 
-VERSION = 1                      # cambia si cambia el formato del .npz o el simulador
+VERSION = 2                      # cambia si cambia el formato del .npz o el simulador (2: nadir transversal en ROS 180°, D23)
 D0_PERSONALIZADO = -6.0          # el frente arranca 6 m antes del plano de volumen
 PERSONALIZADO = "Personalizado"
 

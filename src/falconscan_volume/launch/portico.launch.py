@@ -3,8 +3,9 @@
     ros2 launch falconscan_volume portico.launch.py
     ros2 launch falconscan_volume portico.launch.py volume_lidar:=a1 rviz:=true
 
-Los dos S2E traen la misma IP de fábrica (192.168.11.2): cambiar la del LiDAR de volumen
-(por defecto se espera en 192.168.11.3) antes de conectarlos al mismo switch.
+Direcciones (D22): LiDAR de velocidad (longitudinal) en 192.168.8.8 y LiDAR de volumen
+(transversal) en 192.168.11.2. El host necesita IP en las dos redes (192.168.8.100/24 y
+192.168.11.100/24 en la misma interfaz).
 """
 import os
 
@@ -20,9 +21,9 @@ def generate_launch_description():
     vol = os.path.join(get_package_share_directory("falconscan_volume"), "launch", "volume_lidar.launch.py")
     arg = LaunchConfiguration
     return LaunchDescription([
-        DeclareLaunchArgument("velocity_udp_ip", default_value="192.168.11.2"),
+        DeclareLaunchArgument("velocity_udp_ip", default_value="192.168.8.8"),
         DeclareLaunchArgument("volume_lidar", default_value="s2e", description="s2e o a1"),
-        DeclareLaunchArgument("volume_udp_ip", default_value="192.168.11.3"),
+        DeclareLaunchArgument("volume_udp_ip", default_value="192.168.11.2"),
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("rviz", default_value="false"),
         IncludeLaunchDescription(

@@ -24,11 +24,13 @@ el volumen de material del volco.
 
 ## Estado del hardware (2026-10-27)
 
-- **S2E unidad 1** (S/N 508BFA92…, 192.168.11.2:8089, PC/RPi en 192.168.11.100/24): funciona.
-  Caracterizada con prueba de pared (D11: escala 0.995753, sesgo 2.7 mm) y calibración con el
-  piso a H = 2.216 m (desvío de la flecha −1.3°). Es la que está configurada en `velocity_node`.
-- **S2E unidad 2:** defectuosa (no responde ARP/ping/SDK; diagnóstico del 2026-10-19). Hasta
-  repararla o reemplazarla no hay segundo LiDAR para el volumen.
+Los dos S2E del pórtico funcionan y están en el mismo switch (D22); la RPi tiene 192.168.8.100/24
+y 192.168.11.100/24 en eth0 (perfil de NetworkManager «lidar»):
+- **LONGITUDINAL / velocidad: 192.168.8.8** (MAC 52:50:69:86:46:38). Sin prueba de pared todavía:
+  `velocity_node` sin corrección de escala.
+- **TRANSVERSAL / volumen: 192.168.11.2** = unidad 1 (S/N 508BFA92…). Prueba de pared (D11: escala
+  0.995753, sesgo 2.7 mm), ahora en `volume_node`.
+- Los dos planos se cruzan en el mismo x: `vol_plane_offset_m = 0`.
 - **RPLIDAR A1M8** (USB, banco del LiDAR de volumen): el motor gira pero no envía datos.
 - `sllidar_ros2` con `inverted:=false` publica los rayos en orden inverso al de medición
   (`scan_time_reversed: true`, D10) y el ángulo ROS = 180° − marca del sensor.
@@ -86,7 +88,9 @@ tools/visor_lidar/              GUI de pruebas (PyQt6 + pyqtgraph; apt: python3-
   visor_lidar.py                ventana, fuentes (S2E / simulador / rosbag), pestaña «Sensor», grabación
   paso.py                       «Prueba de paso»: estimador + PassTracker en el visor; «Guardar en yaml»
                                 escribe SOLO la sección velocity_node
-  calibracion.py                «Calibración»: piso vacío con H de cinta (core/calibration.py)
+  calibracion.py                «Calibración» de los DOS LiDAR: piso vacío con H de cinta, orientación de cada
+                                plano y relación entre ellos (core/calibration.py, D24)
+  portico.py                    drivers y tópicos de los dos LiDAR (los usan Calibración y Volumen 3D)
   volumen.py                    «Volumen 3D»: VelocityPipeline + VolumeReconstructor en el visor; nube y
                                 superficie 3D, vista superior, A(x), perfil transversal, mediciones, PLY/JSON
   sim_volumen.py                genera (en paralelo) y guarda un paso del simulador 3D para «Volumen 3D»;
@@ -150,15 +154,16 @@ ya no existe, borrar el enlace viejo en `build/falconscan_velocity/config/`.
   y miden ambos sentidos. `invert_velocity_sign` es **solo para mostrar** (visor, HMI) con
   `with_sign`; nunca aplicarlo a lo que se publica, porque el volumen integra `velocity_mps` (D20).
 - **Geometría nominal:** la flecha 0° del S2E apunta al piso = rayo ROS 180° (`angle_offset_rad =
-  +π/2`), también en los simuladores (2D y pórtico 3D). `mount_height_m` es la cinta (verdadera);
+  +π/2`) en los DOS LiDAR, también en los simuladores (2D y pórtico 3D; D15, D23). `mount_height_m` es la cinta (verdadera);
   la calibración da valores efectivos (offset de rango, rayo hacia abajo) y no sobrescribe el yaml.
   El yaml es el del sensor FÍSICO (H de la cinta, rayos invertidos de sllidar_ros2, calibración de
-  la unidad 1); con los simuladores los launch aplican `SIM_VELOCITY_OVERRIDES` (`falconscan_velocity/sim`).
+  cada unidad); con los simuladores los launch aplican `SIM_VELOCITY_OVERRIDES` (`falconscan_velocity/sim`) y
+  `SIM_VOLUME_OVERRIDES` (`falconscan_volume/sim`). La corrección de rango va con la UNIDAD, no con el puesto.
 - **Pasos de camión:** `PassEvent.v_*` es la rapidez de avance (sentido · v, positiva en los dos
   sentidos); `flags` es una lista de nombres (vacía = válido); `n_scans`/`n_valid` cuentan solo
   escaneos ocupados, desde ENTRANDO (D21).
 - **Decisiones de diseño:** cada una lleva un número D en `docs/algoritmo_velocidad.md`. Antes de
-  numerar una nueva, hacer pull y tomar el siguiente libre (hoy D22): dos ramas ya chocaron en D10–D12.
+  numerar una nueva, hacer pull y tomar el siguiente libre (hoy D25): dos ramas ya chocaron en D10–D12.
 - **Para integrar posición o volumen** integrar `velocity_mps` en `mid_stamp` (header.stamp del
   mensaje), como `falconscan_volume/core/odometry.py`. **No sumar `displacement_m`**: con
   `baseline_scans = 3` los intervalos se solapan y se contaría tres veces. `velocity_filtered_mps`
@@ -177,6 +182,7 @@ ya no existe, borrar el enlace viejo en `build/falconscan_velocity/config/`.
 ## Siguiente trabajo técnico
 
 Ver "Pendientes" en `docs/algoritmo_velocidad.md` y `docs/maquina_estados_volumen.md`. En orden:
-segundo LiDAR conectado (IP del 2.º S2E) y rosbag reales de los dos → calibración (máquina
-CAL_* compartida por los dos LiDAR) con objeto patrón → referencia independiente de velocidad →
-volumen de material (segmentar el volco y restar la tara).
+montar los dos LiDAR y calibrarlos con la pestaña «Calibración» (cinta + piso vacío + cruce) →
+prueba de pared del LiDAR de velocidad (192.168.8.8) → rosbag reales de los dos → máquina CAL_*
+al encender (los nodos aún usan los nominales del yaml) con objeto patrón → referencia independiente
+de velocidad → volumen de material (segmentar el volco y restar la tara).

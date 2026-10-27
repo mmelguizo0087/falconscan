@@ -6,8 +6,8 @@
 Necesita velocity_node corriendo (velocity_s2e.launch.py con scan_topic:=/lidar_velocity/scan),
 o usar portico.launch.py, que lanza los dos.
 
-OJO con dos S2E en el mismo switch: los dos traen 192.168.11.2 de fábrica; hay que cambiar la
-IP de uno (udp_ip) antes de conectarlos juntos.
+El LiDAR transversal está en 192.168.11.2 y el de velocidad en 192.168.8.8 (D22). Un S2E nuevo
+trae 192.168.11.2 de fábrica: cambiarle la IP antes de conectarlo al mismo switch.
 """
 import os
 
@@ -29,7 +29,7 @@ def generate_launch_description():
         DeclareLaunchArgument("lidar", default_value="s2e", description="s2e (UDP) o a1 (serie)"),
         DeclareLaunchArgument("scan_topic", default_value="/lidar_volume/scan"),
         DeclareLaunchArgument("frame_id", default_value="lidar_volume"),
-        DeclareLaunchArgument("udp_ip", default_value="192.168.11.3"),
+        DeclareLaunchArgument("udp_ip", default_value="192.168.11.2"),   # LiDAR transversal (D22)
         DeclareLaunchArgument("udp_port", default_value="8089"),
         DeclareLaunchArgument("serial_port", default_value="/dev/ttyUSB0"),
         DeclareLaunchArgument("serial_baudrate", default_value="115200"),

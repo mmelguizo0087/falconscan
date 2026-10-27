@@ -71,7 +71,7 @@ class SectionProcessor:
         p, g = self.p, self.grid
         r_min = max(p.range_min_m, scan.range_min)
         r_max = min(p.range_max_m, scan.range_max)
-        r = validate_ranges(scan.ranges, r_min, r_max) - p.range_bias_m
+        r = (validate_ranges(scan.ranges, r_min, r_max) - p.range_bias_m) * p.range_scale
         r = median_filter(r, p.median_window, max_spread=p.median_max_spread_m)
         y, z = polar_to_xz(r, scan.angles, self.geom)
         t = scan.stamp + p.vol_time_offset_s + np.arange(r.size) * scan.time_increment

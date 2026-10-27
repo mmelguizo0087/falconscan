@@ -84,11 +84,11 @@ STATUS_TXT = {   # por qué no hay velocidad en este escaneo (core/estimator.py,
 
 # ----------------------------------------------------------------------------- parámetros
 
-def _seccion_velocidad(txt: str) -> tuple[int, int]:
-    """[inicio, fin) de la sección velocity_node en config/falconscan.yaml (compartido con volume_node)."""
-    m = re.search(r"^velocity_node:\s*$", txt, flags=re.M)
+def seccion_yaml(txt: str, nodo: str = "velocity_node") -> tuple[int, int]:
+    """[inicio, fin) de la sección de un nodo en config/falconscan.yaml (velocity_node o volume_node)."""
+    m = re.search(rf"^{nodo}:\s*$", txt, flags=re.M)
     if m is None:
-        raise ValueError("el yaml no tiene sección velocity_node")
+        raise ValueError(f"el yaml no tiene sección {nodo}")
     sig = re.search(r"^\S", txt[m.end():], flags=re.M)
     return m.start(), (m.end() + sig.start()) if sig else len(txt)
 
@@ -99,11 +99,11 @@ def cargar_params(ruta: Path) -> VelocityParams:
     return VelocityParams(**{k: v for k, v in datos.items() if k in nombres})
 
 
-def guardar_params(ruta: Path, p: VelocityParams, nombres: list[str]) -> list[str]:
-    """Reescribe solo los valores de `nombres` en la sección velocity_node del yaml, conservando
-    comentarios y orden (volume_node usa los mismos nombres de montaje y no se toca)."""
+def guardar_params(ruta: Path, p, nombres: list[str], nodo: str = "velocity_node") -> list[str]:
+    """Reescribe solo los valores de `nombres` en la sección `nodo` del yaml, conservando
+    comentarios y orden (los dos nodos usan los mismos nombres de montaje: la otra sección no se toca)."""
     completo = ruta.read_text()
-    i0, i1 = _seccion_velocidad(completo)
+    i0, i1 = seccion_yaml(completo, nodo)
     txt = completo[i0:i1]
     cambiados = []
     for n in nombres:

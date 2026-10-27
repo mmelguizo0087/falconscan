@@ -1,7 +1,7 @@
 """Parámetros del reconstructor de volumen (1:1 con la sección volume_node de config/falconscan.yaml).
 
 Los nombres de montaje/calibración son los mismos del LiDAR de velocidad (mount_height_m,
-angle_offset_rad, angle_direction, range_bias_m, floor_z_m), con los valores del LiDAR de
+angle_offset_rad, angle_direction, range_bias_m, range_scale, floor_z_m), con los valores del LiDAR de
 volumen. Justificación de cada valor: docs/maquina_estados_volumen.md §4.
 """
 from __future__ import annotations
@@ -16,11 +16,12 @@ from falconscan_velocity.core import MountGeometry, ProfileGrid
 class VolumeParams:
     # --- Montaje del LiDAR de volumen: plano de escaneo TRANSVERSAL (y–z) ---
     mount_height_m: float = 5.0        # piso -> centro óptico del sensor            [MEDIR]
-    angle_offset_rad: float = -math.pi / 2   # 0° al nadir                            [CALIBRAR]
+    angle_offset_rad: float = math.pi / 2    # flecha 0° del S2E al piso = rayo ROS 180° (D15, D23)  [CALIBRAR]
     angle_direction: int = 1
     y_offset_m: float = 0.0            # posición lateral del sensor respecto al eje del carril
     floor_z_m: float = 0.0
-    range_bias_m: float = 0.0
+    range_bias_m: float = 0.0          # r_corr = (r − range_bias_m) · range_scale, como el LiDAR de velocidad (D11)
+    range_scale: float = 1.0
     # --- Relación entre los dos LiDAR ---
     vol_plane_offset_m: float = 0.0    # centro de rotación del LiDAR de velocidad -> plano de corte, sobre x  [MEDIR]
     vel_plane_y_m: float = 0.0         # posición lateral del plano de velocidad en el marco transversal

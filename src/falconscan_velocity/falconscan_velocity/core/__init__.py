@@ -1,6 +1,6 @@
 """Núcleo del algoritmo de velocidad. Python puro + numpy; no importa ROS."""
 from .calibration import (FloorFit, MountCalibration, calibrate_mount, detect_direction, fit_floor,
-                          fit_floor_offset, offset_from_down)
+                          fit_floor_offset, object_position, offset_from_down)
 from .correlation import CorrelationResult, find_shift, masked_ncc
 from .estimator import Status, VelocityEstimate, VelocityEstimator, VelocityParams
 from .pass_tracker import READY, PassEvent, PassState, PassTracker, VelocityPipeline
@@ -10,7 +10,7 @@ from .scan import Scan, median_filter, validate_ranges
 
 __all__ = [
     "FloorFit", "MountCalibration", "calibrate_mount", "detect_direction", "fit_floor", "fit_floor_offset",
-    "offset_from_down",
+    "object_position", "offset_from_down",
     "CorrelationResult", "find_shift", "masked_ncc",
     "Status", "VelocityEstimate", "VelocityEstimator", "VelocityParams",
     "READY", "PassEvent", "PassState", "PassTracker", "VelocityPipeline",

@@ -36,8 +36,9 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
-from paso import PanelPaso, ReproductorBag, Scan, _seccion_velocidad, inspeccionar_bag
+from paso import PanelPaso, ReproductorBag, Scan, inspeccionar_bag, seccion_yaml
 from calibracion import PanelCalibracion
+from portico import Portico
 from volumen import PanelVolumen
 from comun import (ACENTO, AMBAR, BORDE, FONDO, PANEL, ROJO, TEXTO, TEXTO_SUAVE, VERDE,
                    ajuste_pared, chip, pantalla_compacta, ros_a_sensor, titulo_grafico)
@@ -48,8 +49,9 @@ CARPETA_BAGS = DATOS / "rosbags"
 CARPETA_CAPTURAS = DATOS / "capturas"
 CALIBRACION_YAML = REPO / "src" / "falconscan_velocity" / "config" / "falconscan.yaml"   # velocity_node y volume_node
 
-LIDAR_IP = "192.168.11.2"
-CMD_DRIVER = ["ros2", "launch", "sllidar_ros2", "sllidar_s2e_launch.py", "frame_id:=lidar"]
+# Fuente «LiDAR» de la barra: índice del combo -> (IP, sección del yaml con su corrección de rango) (D22)
+LIDAR_FUENTE = {0: ("192.168.8.8", "velocity_node"), 3: ("192.168.11.2", "volume_node")}
+FUENTE_SIM, FUENTE_BAG = 1, 2
 CMD_SIM = ["ros2", "run", "falconscan_velocity", "sim_publisher",
            "--ros-args", "-p", "alternate_direction:=true"]   # camiones en ambos sentidos
 
@@ -101,11 +103,11 @@ QPushButton#registro[alerta="true"] {{ color: {ROJO}; border-color: {ROJO}; }}
 
 # ----------------------------------------------------------------------------- utilidades
 
-def leer_calibracion() -> tuple[float, float]:
-    """(range_scale, range_bias_m) de la sección velocity_node del yaml; (1, 0) si no se encuentran."""
+def leer_calibracion(nodo: str = "velocity_node") -> tuple[float, float]:
+    """(range_scale, range_bias_m) de la sección del yaml de ese LiDAR; (1, 0) si no se encuentran."""
     try:
         txt = CALIBRACION_YAML.read_text()
-        i0, i1 = _seccion_velocidad(txt)
+        i0, i1 = seccion_yaml(txt, nodo)
         txt = txt[i0:i1]
     except (OSError, ValueError):
         return 1.0, 0.0
@@ -287,7 +289,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.t_inicio = 0.0
         self.t_bag = 0.0
         self.ruta_bag: Path | None = None
-        self.calib = leer_calibracion()
+        self.corr_rango = leer_calibracion()      # (escala, sesgo) del LiDAR que se está leyendo
         self._ultimo_dibujado = -1
         self._escaneo_mostrado: Escaneo | None = None
         self._r_mostrado: np.ndarray | None = None
@@ -329,16 +331,17 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         barra.addWidget(titulo)
         barra.addSpacing(6)
         self.fuente = QtWidgets.QComboBox()
-        self.fuente.addItems(["LiDAR S2E", "Simulador", "Rosbag…"])
-        self.fuente.setToolTip(f"De dónde vienen los datos: LiDAR S2E ({LIDAR_IP}), simulador de volquetas\n"
-                               "(probar sin hardware) o un rosbag grabado (repetir un paso con otros parámetros).")
+        self.fuente.addItems(["LiDAR velocidad · 192.168.8.8", "Simulador", "Rosbag…", "LiDAR volumen · 192.168.11.2"])
+        self.fuente.setToolTip("De dónde vienen los datos de «Sensor» y «Prueba de paso»: uno de los dos S2E del pórtico\n"
+                               "(longitudinal = velocidad, transversal = volumen), el simulador de volquetas o un rosbag.\n"
+                               "Las pestañas «Calibración» y «Volumen 3D» usan los DOS LiDAR con su propio control.")
         barra.addWidget(self.fuente)
         self.vel_rep = QtWidgets.QComboBox()
         self.vel_rep.addItems(["1×", "2×", "5×", "máx."])
         self.vel_rep.setToolTip("Velocidad de reproducción del rosbag")
         self.vel_rep.currentIndexChanged.connect(self._vel_rep)
         barra.addWidget(self.vel_rep)
-        self.fuente.currentIndexChanged.connect(lambda i: self.vel_rep.setVisible(i == 2))
+        self.fuente.currentIndexChanged.connect(lambda i: self.vel_rep.setVisible(i == FUENTE_BAG))
         self.vel_rep.setVisible(False)
         self.b_iniciar = QtWidgets.QPushButton("▶ Iniciar", objectName="iniciar")
         self.b_iniciar.setToolTip("Arranca el driver (gira el motor) y empieza a mostrar /scan  [F5]")
@@ -392,6 +395,8 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.pestanas.addTab(div, "Sensor")
         self.paso = PanelPaso(self, CALIBRACION_YAML, DATOS)
         self.pestanas.addTab(self.paso, "Prueba de paso")
+        self.portico = Portico(self.ros.node, lambda nombre: Proceso(nombre, self), self)
+        self.portico.log.connect(self._log)
         self.calib = PanelCalibracion(self, DATOS)
         self.pestanas.addTab(self.calib, "Calibración")
         self.vol = PanelVolumen(self, CALIBRACION_YAML, DATOS)
@@ -528,10 +533,10 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
         self.alcance.setToolTip("Radio de la vista superior y límite del eje de distancia")
         self.alcance.valueChanged.connect(self._ajustar_vista)
         f.addRow("Alcance vista", self.alcance)
-        s, b = self.calib
+        s, b = self.corr_rango
         self.chk_calib = QtWidgets.QCheckBox(f"Corregir rango (×{s:.6f}, −{b*1e3:.1f} mm)")
-        self.chk_calib.setToolTip(f"r_corr = (r − range_bias_m) · range_scale\nValores leídos de {CALIBRACION_YAML}\n"
-                                  "Calibración de la prueba de pared (unidad 1). Desactiva para ver el dato crudo.")
+        self.chk_calib.setToolTip(f"r_corr = (r − range_bias_m) · range_scale del LiDAR que se lee, de\n{CALIBRACION_YAML}\n"
+                                  "(velocity_node o volume_node). Desactiva para ver el dato crudo.")
         self.chk_calib.setChecked(True)
         f.addRow(self.chk_calib)
         b_vista = QtWidgets.QPushButton("Restablecer vista")
@@ -607,7 +612,13 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
             return
         self.b_iniciar.setEnabled(False)
         self.fuente.setEnabled(False)
-        if self.fuente.currentIndex() != 2 and self.ros.publicadores("/scan") > 0:
+        if self.fuente.currentIndex() in LIDAR_FUENTE and self.portico.drivers_propios():
+            QtWidgets.QMessageBox.information(
+                self, "LiDAR en uso", "Los LiDAR del pórtico están encendidos desde «Calibración» / «Volumen 3D».\n"
+                "Apágalos allí antes de leer uno desde la barra (dos drivers no pueden usar el mismo sensor).")
+            self._estado_detenido()
+            return
+        if self.fuente.currentIndex() != FUENTE_BAG and self.ros.publicadores("/scan") > 0:
             # Puede ser un driver lanzado desde una terminal, o uno recién detenido que el grafo de
             # ROS aún no olvidó: solo cuenta como externo si de verdad llegan datos.
             self.insignia.fijar("Buscando datos en /scan…", AMBAR)
@@ -628,39 +639,48 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
 
     def _arrancar_fuente(self):
         self.driver_externo = False
-        if self.fuente.currentIndex() == 2:
+        if self.fuente.currentIndex() == FUENTE_BAG:
             self._reproducir()
             return
-        # La calibración es del S2E físico; el simulador ya publica rangos exactos
-        real = self.fuente.currentIndex() == 0
+        # La corrección de rango es de cada S2E físico; el simulador ya publica rangos exactos
+        real = self.fuente.currentIndex() in LIDAR_FUENTE
+        if real:
+            ip, nodo = LIDAR_FUENTE[self.fuente.currentIndex()]
+            self.lidar_ip = ip
+            self.corr_rango = leer_calibracion(nodo)
+            s, b = self.corr_rango
+            self.chk_calib.setText(f"Corregir rango (×{s:.6f}, −{b*1e3:.1f} mm)")
         self._fijar_calibracion(real)
-        if self.fuente.currentIndex() == 0:
+        if real:
             self.insignia.fijar("Comprobando red…", AMBAR)
-            self._log(f"Comprobando que el LiDAR responde en {LIDAR_IP}…")
-            self.ping.start("ping", ["-c", "1", "-W", "1", LIDAR_IP])
+            self._log(f"Comprobando que el LiDAR responde en {self.lidar_ip}…")
+            self.ping.start("ping", ["-c", "1", "-W", "1", self.lidar_ip])
         else:
             self._lanzar(CMD_SIM, "simulador")
 
     def _ping_resultado(self, codigo, _estado):
         if codigo == 0:
             self._log("El LiDAR responde. Lanzando driver…", "ok")
-            self._lanzar(CMD_DRIVER, "driver")
+            self._lanzar(self._cmd_driver(), "driver")
             return
         self._estado_detenido()
         r = QtWidgets.QMessageBox.warning(
             self, "El LiDAR no responde",
-            f"No hay respuesta de {LIDAR_IP}.\n\nRevisa:\n"
+            f"No hay respuesta de {self.lidar_ip}.\n\nRevisa:\n"
             "  • Alimentación de 12 V del LiDAR\n"
             "  • Cable Ethernet entre el LiDAR y el puerto eth0 de la Raspberry\n"
-            "  • Que eth0 tenga la IP 192.168.11.100 (perfil de red «lidar»):\n"
+            "  • Que eth0 tenga IP en esa red: 192.168.8.100 y 192.168.11.100 (perfil «lidar»):\n"
             "      nmcli con up lidar\n\n"
             "¿Lanzar el driver de todos modos?",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No)
         if r == QtWidgets.QMessageBox.StandardButton.Yes:
-            self._lanzar(CMD_DRIVER, "driver")
+            self._lanzar(self._cmd_driver(), "driver")
         else:
-            self._log(f"Sin respuesta de {LIDAR_IP}; lectura cancelada.", "error")
+            self._log(f"Sin respuesta de {self.lidar_ip}; lectura cancelada.", "error")
+
+    def _cmd_driver(self) -> list[str]:
+        return ["ros2", "launch", "sllidar_ros2", "sllidar_s2e_launch.py", "frame_id:=lidar", f"udp_ip:={self.lidar_ip}"]
 
     def _lanzar(self, cmd, nombre):
         self._log("$ " + " ".join(cmd))
@@ -670,7 +690,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
 
     def _comenzar_lectura(self, topico):
         self.ros.suscribir(topico)
-        self._preparar_lectura(sim=self.fuente.currentIndex() == 1 and not self.driver_externo)
+        self._preparar_lectura(sim=self.fuente.currentIndex() == FUENTE_SIM and not self.driver_externo)
 
     def _fijar_calibracion(self, real: bool):
         if self.chk_calib.isChecked() != real:
@@ -768,6 +788,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
     def closeEvent(self, ev):
         self.reproductor.detener()
         self.vol.cerrar()
+        self.portico.cerrar()
         if self.bag.activo():
             self.bag.detener(esperar_ms=5000)
         if self.driver.activo():
@@ -845,7 +866,7 @@ class VentanaPrincipal(QtWidgets.QMainWindow):
     def _corregir(self, r: np.ndarray) -> np.ndarray:
         if not self.chk_calib.isChecked():
             return r
-        s, b = self.calib
+        s, b = self.corr_rango
         return (r - b) * s
 
     def _rangos(self, buffer):

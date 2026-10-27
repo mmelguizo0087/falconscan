@@ -44,6 +44,7 @@ except ImportError:   # sin `source install/setup.bash`: usar el código fuente 
     from falconscan_volume.core import VolumeParams, VolumeReconstructor
 from falconscan_velocity.core import PassState, Scan, VelocityParams, VelocityPipeline, polar_to_xz, validate_ranges
 from falconscan_velocity.sim import SIM_VELOCITY_OVERRIDES
+from falconscan_volume.sim import SIM_VOLUME_OVERRIDES
 from falconscan_volume.core.odometry import VelocitySample
 from falconscan_volume.core.reconstruction import Reconstruction, surface_triangles, write_json, write_ply
 from falconscan_volume.core.reconstructor import CaptureStarted, CloudUpdate, Measurement, VolState
@@ -331,6 +332,8 @@ class PanelVolumen(QtWidgets.QWidget):
         self.mediciones: list[Measurement] = []
         self.registro: Path | None = None
         self._rec_vista: Reconstruction | None = None
+        # Valores EFECTIVOS de la pestaña «Calibración» para cada LiDAR (no van al yaml)
+        self.calibracion: dict[str, dict] = {}
         self._en_vivo_dibujado = 0.0
         self._construir()
         self.t_vivo = QtCore.QTimer(self, interval=100, timeout=self._tick_vivo)
@@ -628,9 +631,20 @@ class PanelVolumen(QtWidgets.QWidget):
     def _params_fuente(self, sim: bool) -> tuple[VelocityParams, VolumeParams]:
         from dataclasses import replace
         vp, wp = cargar_params(self.yaml_ruta)
-        if sim:   # yaml del sensor físico; el simulador es el modelo (igual que volume_sim.launch.py)
-            vp = replace(vp, **SIM_VELOCITY_OVERRIDES)
+        if sim:   # yaml de los sensores físicos; el simulador es el modelo (igual que volume_sim.launch.py)
+            vp, wp = replace(vp, **SIM_VELOCITY_OVERRIDES), replace(wp, **SIM_VOLUME_OVERRIDES)
+        else:     # datos reales: la calibración aplicada (offset de rango, rayo abajo, sentido, relación)
+            vp = replace(vp, **self.calibracion.get("vel", {}))
+            wp = replace(wp, **self.calibracion.get("vol", {}))
         return vp, replace(wp, vol_edge_from_velocity=self.chk_bordes.isChecked())
+
+    def fijar_calibracion(self, clave: str, efectivos: dict | None):
+        """Valores efectivos de un LiDAR ("vel" o "vol") que deja la pestaña «Calibración». Se usan con
+        las fuentes reales (ROS, rosbag) desde la próxima medición; el yaml no cambia."""
+        if efectivos:
+            self.calibracion[clave] = dict(efectivos)
+        else:
+            self.calibracion.pop(clave, None)
 
     def iniciar(self):
         if self.leyendo or self.generador.state() != QtCore.QProcess.ProcessState.NotRunning:
@@ -725,6 +739,16 @@ class PanelVolumen(QtWidgets.QWidget):
     def _iniciar_ros(self):
         from rclpy.qos import qos_profile_sensor_data
         from sensor_msgs.msg import LaserScan
+        tv0, tw0 = self.e_vel.text().strip(), self.e_vol.text().strip()
+        portico = getattr(self.v, "portico", None)
+        nodo0 = self.v.ros.node
+        if portico is not None and not portico.encendido and \
+                (nodo0.count_publishers(tv0) == 0 or nodo0.count_publishers(tw0) == 0):
+            r = QtWidgets.QMessageBox.question(
+                self, "LiDAR del pórtico", f"Nadie publica {tv0} y {tw0}.\n\n¿Encender los dos LiDAR del pórtico "
+                "(velocidad 192.168.8.8, volumen 192.168.11.2)?")
+            if r == QtWidgets.QMessageBox.StandardButton.Yes:
+                portico.encender()
         vp, wp = self._params_fuente(sim=False)
         self.proc.configurar(vp, wp)
         self._actualizar_perfil_estatico(wp)
@@ -736,7 +760,8 @@ class PanelVolumen(QtWidgets.QWidget):
                                      qos_profile_sensor_data),
             nodo.create_subscription(LaserScan, tw, lambda m: self.proc.volumen(scan_de_msg(m), time.monotonic()),
                                      qos_profile_sensor_data)]
-        self.l_info.setText(f"ROS en vivo: {tv} + {tw} · parámetros de config/falconscan.yaml")
+        cal = " + calibración aplicada" if self.calibracion else ""
+        self.l_info.setText(f"ROS en vivo: {tv} + {tw} · parámetros de config/falconscan.yaml{cal}")
         self.v._log(f"Volumen: suscrito a {tv} y {tw}.", "info")
         self._bloquear(True)
         self.t_vivo.start()

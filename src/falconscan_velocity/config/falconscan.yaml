@@ -10,8 +10,9 @@
 # Los valores de MONTAJE son provisionales hasta la ficha de calibración (reporte §6, fase 0).
 velocity_node:
   ros__parameters:
+    # LiDAR LONGITUDINAL: S2E en 192.168.8.8 (MAC 52:50:69:86:46:38), desde el 2026-10-27 (D22).
     # --- Montaje: plano de escaneo vertical que CONTIENE el eje de avance ---
-    mount_height_m: 2.216          # altura del origen óptico sobre el piso  [MEDIR]
+    mount_height_m: 2.216          # altura del origen óptico sobre el piso  [MEDIR con cinta en la calibración]
     # Convención de instalación (2026-10-21): la flecha de 0° del S2E apunta al piso. Con
     # sllidar_ros2 (inverted:=false) esa flecha es el rayo ROS 180° -> offset = −π/2 − π ≡ +π/2.
     # Es el valor NOMINAL: la calibración mide el desvío de la flecha y no lo sobrescribe.
@@ -19,11 +20,11 @@ velocity_node:
     angle_direction: 1           # -1 si el sensor está montado invertido  [VERIFICAR]
     x_offset_m: 0.0
     floor_z_m: 0.0
-    # Corrección de rango r_corr = (r − range_bias_m) · range_scale. Calibrada en prueba de
-    # pared (20-oct-2026) para la unidad 1 (S/N 508BFA92C3E49EC6A5EB9AF3C6565566): el sensor
-    # mide de más ≈ 2.7 mm + 0.43 % · d. Rehacer si se cambia de unidad. El launch la anula con use_sim.
-    range_bias_m: 0.0027
-    range_scale: 0.995753
+    # Corrección de rango r_corr = (r − range_bias_m) · range_scale. Esta unidad NO tiene prueba de
+    # pared todavía: sin corrección de escala. La calibración con el piso da el offset efectivo. (La
+    # de la unidad 1, 0.0027 / 0.995753, pasó a volume_node.)
+    range_bias_m: 0.0
+    range_scale: 1.0
 
     # --- Validación / filtrado ---
     range_min_m: 0.2
@@ -105,21 +106,25 @@ velocity_node:
 # docs/maquina_estados_volumen.md §4.
 volume_node:
   ros__parameters:
+    # LiDAR TRANSVERSAL: S2E unidad 1 en 192.168.11.2 (S/N 508BFA92…, MAC 52:50:a0:59:51:53) (D22).
     # --- Montaje del LiDAR de volumen: plano de escaneo TRANSVERSAL (y–z) ---
-    mount_height_m: 5.0          # piso -> centro óptico del sensor                 [MEDIR]
-    # θ = 0 al nadir (simulador 3D). Un S2E real con la flecha 0° hacia el piso publica el nadir en
-    # ROS 180° -> +1.5707963, como el LiDAR de velocidad (D15). [VERIFICAR con el sensor montado]
-    angle_offset_rad: -1.5707963 # 0° al nadir                                      [CALIBRAR]
-    angle_direction: 1
-    y_offset_m: 0.0              # posición lateral del sensor respecto al eje del carril
+    mount_height_m: 5.0          # piso -> centro óptico del sensor  [MEDIR con cinta en la calibración]
+    # Flecha 0° del S2E al piso = rayo ROS 180° (D15, D23), también en el simulador 3D. NOMINAL: la
+    # calibración mide el desvío de la flecha y no lo sobrescribe.
+    angle_offset_rad: 1.5707963
+    angle_direction: 1           # +1: +y a la izquierda de un vehículo que avanza hacia +x (calibración, paso 3)
+    y_offset_m: 0.0              # posición lateral del sensor respecto al eje del carril  [MEDIR]
     floor_z_m: 0.0
-    range_bias_m: 0.0
+    # Corrección de rango de la unidad 1 (prueba de pared, 20-oct-2026, D11): mide de más
+    # ≈ 2.7 mm + 0.43 % · d. Los simuladores la anulan (SIM_VOLUME_OVERRIDES).
+    range_bias_m: 0.0027
+    range_scale: 0.995753
 
     # --- Relación entre los dos LiDAR ---
     # Distancia, sobre el eje de avance x, del centro de rotación del LiDAR de velocidad al
     # plano de corte del LiDAR transversal (positivo hacia +x del LiDAR de velocidad). Si
     # x_offset_m del LiDAR de velocidad no es 0, es la posición del plano en ese marco x.
-    vol_plane_offset_m: 0.0      #                                                   [MEDIR]
+    vol_plane_offset_m: 0.0      # 0 cm: planos en el mismo x (instalación del 2026-10-27; calibración, paso 4)
     vel_plane_y_m: 0.0           # posición lateral del plano de velocidad (marco transversal)
     vol_time_offset_s: 0.0       # corrección de reloj/latencia; ajustar con sync_offset_s
 

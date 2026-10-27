@@ -292,10 +292,10 @@ Resultado: `VALIDA` (sin banderas), `CON_ADVERTENCIAS`, `INVALIDA` o `DESCARTADA
 
 | Parámetro | Defecto | Unidad | Justificación |
 |---|---|---|---|
-| `mount_height_m`, `angle_offset_rad`, `angle_direction`, `range_bias_m`, `floor_z_m` | 5.0, −π/2, 1, 0, 0 | — | Mismos nombres que el LiDAR de velocidad. **Medir / calibrar**. −π/2 = θ 0 al nadir, como publica el simulador 3D el escaneo transversal. Un S2E real con la flecha 0° hacia el piso publica el nadir en ROS 180° → +π/2, como el de velocidad (D15 en `algoritmo_velocidad.md`): verificar con el sensor montado |
+| `mount_height_m`, `angle_offset_rad`, `angle_direction`, `range_bias_m`, `range_scale`, `floor_z_m` | 5.0, +π/2, 1, 0, 1, 0 | — | Mismos nombres y fórmula que el LiDAR de velocidad: `r_corr = (r − range_bias_m)·range_scale`. +π/2 = flecha 0° del S2E al piso (rayo ROS 180°), también en el simulador del pórtico (D23). El yaml lleva los valores del sensor físico: unidad 1 en 192.168.11.2 con su prueba de pared (D22). **Medir con cinta y calibrar** (pestaña «Calibración», D24) |
 | `y_offset_m` | 0.0 | m | Posición lateral del sensor respecto al eje del carril |
-| `vol_plane_offset_m` | 0.0 | m | Distancia sobre x del centro de rotación del LiDAR de velocidad al plano transversal. **Medir** |
-| `vel_plane_y_m` | 0.0 | m | Posición lateral del plano de velocidad (informativo) |
+| `vol_plane_offset_m` | 0.0 | m | Distancia sobre x del centro de rotación del LiDAR de velocidad al plano transversal. Instalación del 2026-10-27: **0 cm**. La calibración (paso 4) la verifica con un objeto en el cruce de los planos |
+| `vel_plane_y_m` | 0.0 | m | Posición lateral del plano de velocidad (informativo); la calibración (paso 4) la mide |
 | `vol_time_offset_s` | 0.0 | s | Corrección de reloj/latencia; ajustar con `sync_offset_s` de varios pasos |
 | `vol_roi_y_min_m` / `vol_roi_y_max_m` | −2.0 / 2.0 | m | Ancho ≤ 2.6 m + holgura de centrado |
 | `vol_roi_z_max_m` | 4.5 | m | Por encima: pórtico |
@@ -461,13 +461,18 @@ ros2 topic echo /volume/measurement
 # LiDAR de volumen real (banco con el A1, o S2E) + volume_node; velocity_node aparte
 ros2 launch falconscan_volume volume_lidar.launch.py lidar:=a1 rviz:=true
 # Pórtico real completo
-ros2 launch falconscan_volume portico.launch.py
+ros2 launch falconscan_volume portico.launch.py          # velocidad 192.168.8.8, volumen 192.168.11.2 (D22)
 # Visor (pestaña «Volumen 3D»): mismo núcleo dentro del GUI, con nube y superficie 3D, vista
 # superior, A(x), perfil transversal y tabla de mediciones. Fuentes: escenarios del simulador
 # (los de tools/evaluate_volume_sim.py, generados una vez y en caché), ROS en vivo o rosbag.
 tools/visor_lidar/visor_lidar.sh
 python3 tools/visor_lidar/sim_volumen.py --caso "10 km/h +x" --salida /tmp/paso.npz   # generar sin GUI
 ```
+
+Calibración de los dos LiDAR (D24): pestaña «Calibración» del visor. «▶ Encender LiDAR» lanza los
+dos drivers (los mismos tópicos que `portico.launch.py`); con el piso vacío calibra los dos a la
+vez, orienta cada plano con un objeto y mide la relación entre ellos con un poste en el cruce de
+los planos. «Aplicar» deja los valores efectivos en «Volumen 3D» (fuente ROS o rosbag).
 
 `volume_sim.launch.py` aplica a `velocity_node` los `SIM_VELOCITY_OVERRIDES` de
 `falconscan_velocity/sim`: el yaml es el del sensor físico (H de la cinta, rayos invertidos de

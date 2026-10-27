@@ -65,7 +65,8 @@ def test_person_is_discarded():
 
 # ------------------------------------------------------------------ máquina de estados
 def _scan(t, ranges):
-    return Scan(stamp=t, angle_min=-0.5, angle_increment=0.01, ranges=ranges, time_increment=0.0,
+    """±0.5 rad alrededor del nadir, que el S2E con la flecha al piso publica en ROS 180° (D23)."""
+    return Scan(stamp=t, angle_min=math.pi - 0.5, angle_increment=0.01, ranges=ranges, time_increment=0.0,
                 range_min=0.05, range_max=30.0)
 
 

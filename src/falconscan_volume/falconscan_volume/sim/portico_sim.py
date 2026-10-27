@@ -208,6 +208,7 @@ class PorticoSimConfig:
     # que el simulador 2D, para que valga la geometría nominal del yaml (angle_offset_rad = +π/2).
     vel_nadir_angle_deg: float = 180.0
     vol_sector_deg: tuple[float, float] = (-50.0, 50.0)
+    vol_nadir_angle_deg: float = 180.0  # igual para el transversal (D23): S2E con la flecha 0° al piso
     vol_phase_s: float = 0.037         # desfase entre las rotaciones de los dos sensores
     vol_clock_offset_s: float = 0.0    # error de reloj inyectado en los stamps del LiDAR de volumen
     range_noise_m: float = 0.015
@@ -290,7 +291,7 @@ class PorticoSim:
         """Plano y–z en x = vol_plane_x (θ > 0 hacia +y)."""
         c = self.cfg
         return self._scan(stamp, (c.vol_plane_x, c.vol_sensor_y), (0.0, 1.0), c.vol_height, c.vol_sector_deg,
-                          report_offset=c.vol_clock_offset_s)
+                          report_offset=c.vol_clock_offset_s, nadir_angle=math.radians(c.vol_nadir_angle_deg))
 
     def run(self, duration_s: float, t0: float = 0.0) -> Iterator[tuple[float, str, Scan]]:
         """(instante de entrega, "vel"|"vol", escaneo) en orden temporal. Un escaneo se entrega

@@ -17,6 +17,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 from falconscan_velocity.sim import SIM_VELOCITY_OVERRIDES
+from falconscan_volume.sim import SIM_VOLUME_OVERRIDES
 
 
 def generate_launch_description():
@@ -47,7 +48,7 @@ def generate_launch_description():
         ),
         Node(
             package="falconscan_volume", executable="volume_node", name="volume_node",
-            parameters=[cfg], remappings=[("scan", "/lidar_volume/scan")], output="screen",
+            parameters=[cfg, SIM_VOLUME_OVERRIDES], remappings=[("scan", "/lidar_volume/scan")], output="screen",
         ),
         # El perfil transversal en vivo se dibuja 1.5 m delante del frente de la nube
         Node(

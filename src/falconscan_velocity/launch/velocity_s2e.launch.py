@@ -1,11 +1,11 @@
 """Lanza el driver del RPLIDAR S2E (sllidar_ros2, UDP) y velocity_node juntos.
 
     ros2 launch falconscan_velocity velocity_s2e.launch.py
-    ros2 launch falconscan_velocity velocity_s2e.launch.py udp_ip:=192.168.11.2 inverted:=true
+    ros2 launch falconscan_velocity velocity_s2e.launch.py udp_ip:=192.168.8.8 inverted:=true
     ros2 launch falconscan_velocity velocity_s2e.launch.py scan_topic:=/lidar_velocity/scan
 
-El PC debe tener IP en la red del sensor (por defecto el S2E es 192.168.11.2 y espera al
-host en 192.168.11.100/24).
+El LiDAR longitudinal (velocidad) está en 192.168.8.8 (D22): el PC debe tener IP en esa red
+(192.168.8.100/24; la RPi la tiene en eth0 junto con 192.168.11.100/24 del transversal).
 """
 import os
 
@@ -24,7 +24,7 @@ def generate_launch_description():
     scan_topic = LaunchConfiguration("scan_topic")
     return LaunchDescription([
         DeclareLaunchArgument("scan_topic", default_value="/scan"),
-        DeclareLaunchArgument("udp_ip", default_value="192.168.11.2"),
+        DeclareLaunchArgument("udp_ip", default_value="192.168.8.8"),
         DeclareLaunchArgument("udp_port", default_value="8089"),
         DeclareLaunchArgument("frame_id", default_value="lidar_velocity"),
         DeclareLaunchArgument("inverted", default_value="false"),

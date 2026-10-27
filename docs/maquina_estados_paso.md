@@ -36,7 +36,7 @@ Estado:
 | Velocidad de paso 5–10 km/h (`pass_v_max_mps = 2.78`) | **Implementada** | `config/falconscan.yaml`, `VelocityParams` |
 | Salidas `/pass_state` y `/pass_event`; `pass_id`, `direction` y `advance_mps` en `VelocityEstimate` | **Implementadas**, en el marco mundo (D20) | `velocity_node.py`, `falconscan_interfaces/msg/` |
 | Flecha 0° al piso como nominal (`angle_offset_rad = +π/2`) | **Implementada** en el LiDAR de velocidad y en los dos simuladores (nadir en ROS 180°); el `volume_node` sigue con −π/2 hasta verificar el montaje del transversal | `config/falconscan.yaml`, `sim/lidar_sim.py`, `falconscan_volume/sim/portico_sim.py` |
-| Pasos 1–3 de la calibración: H fijo, ajuste `(b, α)`, estados OK / CORREGIDO / FALLA, avisos | **Implementados como herramienta** del visor, no como máquina de encendido | `core/calibration.py`, pestaña «Calibración» |
+| Pasos 1–3 de la calibración: H fijo, ajuste `(b, α)`, estados OK / CORREGIDO / FALLA, avisos | **Implementados como herramienta** del visor para **los dos LiDAR** a la vez (D24), con orientación de cada plano y la relación entre ellos (`vol_plane_offset_m`, `vel_plane_y_m`); no como máquina de encendido | `core/calibration.py`, pestaña «Calibración» |
 | Tolerancias `cal_offset_tol_*`, `cal_angle_tol_*` | **Implementadas** | `VelocityParams`, `config/falconscan.yaml` |
 | Máquina de calibración (C1–C14), supervisor, `/calibration_state`, `/system_state`, `recal_after_loss_s` | Pendiente (compartida con el LiDAR de volumen) | — |
 | Perfil de piso por celda `z_piso(x)`, clase PLANO / IRREGULAR, bandera `PISO_IRREGULAR` | Pendiente | `core/geometry.py`, `core/calibration.py` |

@@ -283,6 +283,8 @@ def calibrate_mount(
     angle_tol_max_rad: float = math.radians(5.0),
     fan_angle_rad: float = 2 * math.pi,
     fan_center_rad: float = 0.0,
+    axis_name: str = "x",
+    coord_offset_m: float = 0.0,
     **fit_kwargs,
 ) -> MountCalibration:
     """Calibra con escaneos del piso vacío (`ranges`: M rayos o N×M, ya corregidos en rango).
@@ -292,7 +294,9 @@ def calibrate_mount(
     escaneos se ajusta la mediana temporal y se usa la dispersión por rayo para avisar si algo se
     movió. Solo se usan los rayos del abanico de interés (``fan_angle_rad`` / ``fan_center_rad``,
     D16), centrado en ``down_guess_rad``: lo que queda fuera (soporte, techo) no entra en el ajuste
-    ni en los avisos. Lanza ValueError si no encuentra el piso.
+    ni en los avisos. ``axis_name`` / ``coord_offset_m`` solo cambian cómo se escriben las posiciones en
+    los avisos (LiDAR transversal: "y" y su y_offset_m, para darlas en el marco del carril).
+    Lanza ValueError si no encuentra el piso.
     """
     a = np.asarray(angles, dtype=np.float64)
     g_guess = MountGeometry(height_ref_m, offset_from_down(down_guess_rad, angle_direction), angle_direction)
@@ -357,7 +361,8 @@ def calibrate_mount(
         x_fan = [h_perp * math.tan(d) if abs(d) < math.radians(89) else math.copysign(math.inf, d) for d in bordes]
         if x_fan[0] > x0 or x_fan[1] < x1:
             avisos.append(f"El abanico ({math.degrees(fan_angle_rad):.0f}°) solo llega al piso entre "
-                          f"x = {x_fan[0]:+.2f} y {x_fan[1]:+.2f} m y la ROI va de {x0:+.2f} a {x1:+.2f} m: "
+                          f"{axis_name} = {x_fan[0] + coord_offset_m:+.2f} y {x_fan[1] + coord_offset_m:+.2f} m y la "
+                          f"ROI va de {x0 + coord_offset_m:+.2f} a {x1 + coord_offset_m:+.2f} m: "
                           "ábrelo o achica la ROI.")
     if cobertura < 0.9:
         avisos.append(f"Solo se ve piso en el {cobertura * 100:.0f} % de la ROI: hay sombras o rayos sin "
@@ -370,7 +375,8 @@ def calibrate_mount(
     objeto = None
     if alto.sum() >= 5:
         objeto = (float(x[alto].min()), float(x[alto].max()))
-        avisos.append(f"Hay algo sobre el piso dentro de la ROI (x = {objeto[0]:.2f} a {objeto[1]:.2f} m). "
+        avisos.append(f"Hay algo sobre el piso dentro de la ROI ({axis_name} = {objeto[0] + coord_offset_m:.2f} a "
+                      f"{objeto[1] + coord_offset_m:.2f} m). "
                       "Si es fijo, la máquina de estados quedará OBSTRUIDA; si es temporal, retíralo y repite.")
 
     # Sobre todos los rayos que miran al piso, no solo los inliers: un rayo que cambió mucho
@@ -423,3 +429,38 @@ def detect_direction(
     x = r1[nuevo] * np.sin(a[nuevo] - down_angle_rad)
     xm = float(np.median(x))
     return (1 if np.sign(xm) == entry_side else -1), xm, n
+
+
+def object_position(
+    ranges_empty: np.ndarray,
+    ranges_object: np.ndarray,
+    angles: np.ndarray,
+    geometry: MountGeometry,
+    *,
+    range_offset_m: float = 0.0,
+    min_change_m: float = 0.10,
+    min_rays: int = 5,
+) -> tuple[float, float, int] | None:
+    """Posición de un objeto nuevo respecto al piso vacío, en el marco CALIBRADO del LiDAR.
+
+    Sirve para relacionar los dos LiDAR (calibración, paso 4): un objeto delgado (poste, persona)
+    parado en el cruce de los dos planos lo ven los dos; el de velocidad da su x, que debe ser
+    ``vol_plane_offset_m``, y el transversal su y, que debe ser ``vel_plane_y_m``. ``geometry``
+    es la geometría calibrada (``MountCalibration.geometry`` con el desplazamiento del montaje) y
+    ``range_offset_m`` el offset b que se le resta a los rangos. Devuelve (mediana de la
+    coordenada horizontal, altura máxima sobre el piso, n rayos) o None si no se ve el objeto.
+    """
+    def mediana(v):
+        v = np.atleast_2d(np.asarray(v, dtype=np.float64))
+        with np.errstate(invalid="ignore"), _sin_avisos():
+            return np.nanmedian(v, axis=0)
+
+    r0, r1 = mediana(ranges_empty), mediana(ranges_object)
+    with np.errstate(invalid="ignore"):
+        nuevo = np.isfinite(r1) & ~(r1 > r0 - min_change_m)     # más cerca, o donde antes no había retorno
+    x, z = polar_to_xz(r1 - range_offset_m, np.asarray(angles, dtype=np.float64), geometry)
+    nuevo &= np.isfinite(x) & (z > min_change_m) & (z < geometry.height_m - 0.05)   # ni piso ni soporte
+    n = int(nuevo.sum())
+    if n < min_rays:
+        return None
+    return float(np.median(x[nuevo])), float(np.max(z[nuevo])), n

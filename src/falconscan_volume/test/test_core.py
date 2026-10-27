@@ -58,6 +58,25 @@ def test_floor_drift_detected():
     assert sec.floor_drift
 
 
+def test_range_scale_corrects_a_sensor_that_measures_long():
+    """Sensor que mide 0.43 % de más (unidad 1, D11): con range_scale el área vuelve a la verdad."""
+    sim = PorticoSim(CLEAN, Box3D(2.0, 2.45, 2.0), Motion3D(v=0.0, d0=1.0))
+    scan = sim.volume_scan(0.0)
+    largo = type(scan)(scan.stamp, scan.angle_min, scan.angle_increment, scan.ranges * 1.004265,
+                       scan.time_increment, scan.range_min, scan.range_max)
+    sin = SectionProcessor(VolumeParams()).process(largo)
+    con = SectionProcessor(VolumeParams(range_scale=1 / 1.004265)).process(largo)
+    ref = SectionProcessor(VolumeParams()).process(scan)
+    assert con.area_m2 == pytest.approx(ref.area_m2, rel=1e-3)
+    assert abs(sin.area_m2 - ref.area_m2) > 3 * abs(con.area_m2 - ref.area_m2)
+
+
+def test_nominal_is_arrow_to_floor():
+    """Flecha 0° del S2E al piso = rayo ROS 180° (D23): +π/2, también en el simulador del pórtico."""
+    assert VolumeParams().angle_offset_rad == pytest.approx(math.pi / 2)
+    assert PorticoSimConfig().vol_nadir_angle_deg == 180.0
+
+
 # ------------------------------------------------------------------ odometría
 def _hist(v=2.0, n=30, dt=0.1, valid=lambda k: True):
     h = VelocityHistory()
