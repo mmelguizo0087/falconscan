@@ -199,7 +199,7 @@ vacío; escribe `bag_20261028_velocidad.csv`). Esos scripts están FUERA del rep
   3 m/s²·Δt); el reconstructor interpola huecos sin propagar incertidumbre; exactitud validada
   solo en simulación.
 - Ancho medido 2.4–2.7 m: parece alto para ese vehículo; revisar con referencia.
-- Cambio local sin commit en el yaml: `object_h_threshold_m` 0.4 → 0.2 (lo hizo el usuario).
+- yaml: `object_h_threshold_m` 0.4 → 0.2 (usado en la prueba).
 
 **Plan acordado (pendiente, nada implementado):**
 1. Fallo seguro: detectar el pegado a cero (desplazamiento de 0–2 celdas cuando la v reciente
