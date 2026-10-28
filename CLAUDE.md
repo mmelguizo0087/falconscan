@@ -172,6 +172,50 @@ ya no existe, borrar el enlace viejo en `build/falconscan_velocity/config/`.
 - Los resultados del simulador **no** son evidencia de desempeño de campo; decirlo siempre que
   se reporten.
 
+## Primera prueba real con vehículo (2026-10-28) — largo subestimado
+
+Bag `~/Desktop/scan/rosbags/carro_juguete_20261028_160037` (los dos LiDAR, H ≈ 2.27 m). Extraído a
+`~/Desktop/scan/analisis/bag_20261028.npz` con `~/Desktop/scan/herramientas/extrae_bag.py` y
+reprocesado con `herramientas/analiza_paso_bag.py` (mismo flujo que el visor; calibra con el piso
+vacío; escribe `bag_20261028_velocidad.csv`). Esos scripts están FUERA del repo; los del diagnóstico (perfiles h(x,t) por paso, variantes) están en `herramientas/analisis_largo_20261028/`.
+
+- Vehículo de 4.8 m, 5 pasos (3, 6, 7, 9, 10) a 0.4–0.7 m/s (1.5–2.5 km/h, bajo el rango de
+  diseño). Largo medido por `volume_node`: 3.2–3.9 m (−24 % medio). Todas las mediciones INVALIDA.
+- Causa: la **velocidad**, no los tiempos. El largo es ∫v dt entre los cruces del frente y la cola,
+  y esos cruces están bien. En la entrada y la salida la v es correcta; si se toma esa v como
+  constante, el largo sale en 4.5–5.65 m. **A mitad del paso** (techo bajo el sensor) el estimador da
+  AMBIGUOUS o, peor, **OK con pico 0.97–0.99 y v ≈ 0.07–0.13 m/s** (pegado a cero). El perfil no se
+  mueve rígido: hay patrones fijos al sensor (techo especular, vidrios) y la sombra trasera sigue
+  avanzando, así que no fue una parada real (sin referencia de v no está 100 % confirmado).
+- Coincide con el barrido de geometría simulado: c = H − h ≈ 0.67 m → W ≈ 2.3 m (< 3 m, donde
+  ya se aceptaban velocidades erróneas). Recomendación de entonces: H ≥ h_max + 1.45 m.
+- Probado sobre el bag y SIN efecto suficiente: comparar con base de 1 s; excluir |x| < 0.7 m;
+  límite de aceleración por subconjunto consistente (0.5/0.3/0.2 m/s² → 3.76/3.90/4.02 m de media;
+  la racha falsa es coherente por dentro). Descartar muestras < 0.5·v_ref (v_ref = entrada/salida)
+  → −11 % medio (−24..+13 %); usar solo la v de entrada/salida → −14 % (−29..+4 %).
+- Debilidades del estimador (no solo de geometría): depende de la textura (techo plano = hueco
+  L/v sin importar H); **falla sin avisar** (OK con pico alto en pegado a cero); sin memoria (solo
+  compara con el escaneo de hace 0.3 s; la tolerancia de IMPLAUSIBLE crece sin tope con los huecos,
+  3 m/s²·Δt); el reconstructor interpola huecos sin propagar incertidumbre; exactitud validada
+  solo en simulación.
+- Ancho medido 2.4–2.7 m: parece alto para ese vehículo; revisar con referencia.
+- Cambio local sin commit en el yaml: `object_h_threshold_m` 0.4 → 0.2 (lo hizo el usuario).
+
+**Plan acordado (pendiente, nada implementado):**
+1. Fallo seguro: detectar el pegado a cero (desplazamiento de 0–2 celdas cuando la v reciente
+   implica más) con un estado nuevo no válido; poner tope a la tolerancia de IMPLAUSIBLE; en el
+   reconstructor, al cerrar, descartar lo incompatible con v_ref, interpolar, bandera
+   `VELOCIDAD_CORREGIDA` y medición dudosa si la fracción corregida es grande. Sería D25.
+2. Modelo de movimiento (Kalman, v casi constante) con incertidumbre que crece en los tramos ciegos
+   y se propaga al volumen.
+3. Registro contra el perfil acumulado del vehículo (posición directa, en lugar de comparar con un
+   solo escaneo anterior).
+4. Más adelante: bordes y sombras como segunda fuente; descartar vidrio por intensidad (no se usa).
+- En paralelo, hardware: repetir con más espacio libre sobre el vehículo (LiDAR a 3–3.5 m u objetos
+  < 1.3 m), a 5–10 km/h y **con referencia de velocidad** (marcas + cronómetro/video o GPS); prueba
+  de pared del LiDAR 192.168.8.8. Usar este bag y el nuevo como regresión. No ajustar umbrales
+  solo con estos 5 pasos.
+
 ## Equipo
 
 - Martín Melguizo — CEO / Product Manager; mecánica, algoritmos de escaneo.
@@ -180,6 +224,8 @@ ya no existe, borrar el enlace viejo en `build/falconscan_velocity/config/`.
 - Seguimiento académico: Universidad EIA.
 
 ## Siguiente trabajo técnico
+
+**Primero:** el plan de la sección «Primera prueba real con vehículo (2026-10-28)».
 
 Ver "Pendientes" en `docs/algoritmo_velocidad.md` y `docs/maquina_estados_volumen.md`. En orden:
 montar los dos LiDAR y calibrarlos con la pestaña «Calibración» (cinta + piso vacío + cruce) →
