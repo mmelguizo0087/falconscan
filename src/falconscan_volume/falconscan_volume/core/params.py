@@ -40,7 +40,7 @@ class VolumeParams:
     vol_grid_dy_m: float = 0.02
     vol_edge_margin_m: float = 0.10
     # --- Segmentación del perfil ---
-    vol_h_threshold_m: float = 0.4
+    vol_h_threshold_m: float = 0.2
     vol_object_min_width_m: float = 0.5
     vol_object_min_run_m: float = 0.2
     vol_max_nan_run_m: float = 0.20

@@ -302,7 +302,7 @@ Resultado: `VALIDA` (sin banderas), `CON_ADVERTENCIAS`, `INVALIDA` o `DESCARTADA
 | `vol_roi_z_max_m` | 4.5 | m | Por encima: pórtico |
 | `vol_grid_dy_m` | 0.02 | m | ~2 × la resolución lateral |
 | `vol_edge_margin_m` | 0.10 | m | Objeto más cerca del borde lateral → truncado |
-| `vol_h_threshold_m` | 0.4 | m | Igual que velocidad |
+| `vol_h_threshold_m` | 0.2 | m | Igual que velocidad (`object_h_threshold_m` 0.2 en el yaml). 0.4 hasta el 2026-10-29: pedido del usuario |
 | `vol_object_min_width_m` | 0.5 | m | Descarta personas de perfil, postes, aves |
 | `vol_object_min_run_m` | 0.2 | m | Tramo continuo mínimo |
 | `vol_max_nan_run_m` | 0.20 | m | Hueco interpolable dentro del objeto |
