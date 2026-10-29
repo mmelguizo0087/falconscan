@@ -5,7 +5,6 @@ procesamiento (reporte §5.2). Nunca se reemplazan por 0 ni por r_max.
 """
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -64,12 +63,14 @@ def median_filter(r: np.ndarray, window: int = 3, min_valid: int | None = None,
     if min_valid is None:
         min_valid = half + 1
     padded = np.pad(r, half, mode="constant", constant_values=np.nan)
-    win = sliding_window_view(padded, window)
-    count = np.sum(np.isfinite(win), axis=1)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        med = np.nanmedian(win, axis=1)
-        spread = np.nanmax(win, axis=1) - np.nanmin(win, axis=1)
+    # np.sort deja los NaN al final: con c válidos, la mediana es la de s[:, :c] y la dispersión
+    # s[c-1] - s[0]. Mismo resultado que nanmedian/nanmax/nanmin, ~4x más rápido en la RPi
+    # (nanmedian por filas usa arreglos enmascarados y avisa en cada ventana sin datos).
+    s = np.sort(sliding_window_view(padded, window), axis=1)
+    count = np.sum(np.isfinite(s), axis=1)
+    c = np.maximum(count, 1)[:, None]      # c = 0 queda NaN igual (lo descarta ``ok``)
+    med = (np.take_along_axis(s, (c - 1) // 2, axis=1)[:, 0] + np.take_along_axis(s, c // 2, axis=1)[:, 0]) / 2
+    spread = np.take_along_axis(s, c - 1, axis=1)[:, 0] - s[:, 0]
     ok = np.isfinite(r) & (count >= min_valid)
     ok &= (count == window) | (spread <= max_spread)
     return np.where(ok, med, np.nan)

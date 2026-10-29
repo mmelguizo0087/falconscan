@@ -60,7 +60,8 @@ KMH = 3.6
 SIM_VOLUMEN = Path(__file__).with_name("sim_volumen.py")
 TOPICO_VEL, TOPICO_VOL = "/lidar_velocity/scan", "/lidar_volume/scan"
 CMAP = pg.colormap.get("viridis")
-H_COLOR_MAX = 3.5          # altura [m] del extremo de la escala de colores
+H_COLOR_MAX = 3.5          # extremo de la escala de colores [m] cuando aún no hay objeto
+H_COLOR_MIN = 0.1          # escala mínima [m]: un objeto casi plano no satura el color con ruido
 
 ESTADOS_VOL = {
     VolState.ARRANQUE: ("ARRANQUE", AMBAR), VolState.VACIO: ("VACÍO", VERDE),
@@ -75,6 +76,11 @@ ESTADOS_VEL = {
     PassState.SALIENDO: ("SALIENDO", "#a371f7"), PassState.OBSTRUIDO: ("OBSTRUIDO", ROJO),
     PassState.SIN_DATOS: ("SIN DATOS", ROJO),
 }
+# Con un objeto bajo el pórtico no se redibuja nada (salvo la vista en vivo opcional): el GUI
+# compite por la CPU (y el GIL) con el procesamiento en la RPi. Se dibuja al terminar el paso.
+EN_PASO_VOL = {VolState.DETECTANDO, VolState.CAPTURANDO, VolState.HUECO, VolState.CERRANDO, VolState.INTEGRANDO}
+EN_PASO_VEL = {PassState.ENTRANDO, PassState.EN_PASO, PassState.SALIENDO}
+PERFIL_REPOSO_S = 0.25     # perfil transversal sin objeto: ~4 Hz alcanza para revisar el montaje
 RESULTADO = {0: ("VÁLIDA", VERDE), 1: ("ADVERTENCIAS", AMBAR), 2: ("INVÁLIDA", ROJO), 3: ("DESCARTADA", TEXTO_SUAVE)}
 COLUMNAS = ["#", "Paso", "Sentido", "Resultado", "V [m³]", "±", "Verdad", "Error", "Largo", "Ancho", "Alto",
             "v avance", "Perfiles", "Banderas"]
@@ -93,9 +99,18 @@ def cargar_params(ruta: Path) -> tuple[VelocityParams, VolumeParams]:
             VolumeParams(**{k: v for k, v in sw.items() if k in nw}))
 
 
-def colores_altura(h: np.ndarray, alfa: float = 1.0) -> np.ndarray:
-    """RGBA en [0, 1] según la altura (viridis de 0 a H_COLOR_MAX)."""
-    c = CMAP.map(np.clip(np.nan_to_num(h, nan=0.0) / H_COLOR_MAX, 0, 1), mode="float")
+def escala_altura(rec: Reconstruction) -> float:
+    """Extremo de la escala de colores: la altura máxima medida del objeto (malla h(x, y); si no hay
+    malla, la nube). Así el color usa todo el rango para cualquier objeto."""
+    for a in (rec.surface_h, rec.points[:, 3] if len(rec.points) else np.empty(0)):
+        if a.size and np.isfinite(a).any():
+            return max(float(np.nanmax(a)), H_COLOR_MIN)
+    return H_COLOR_MAX
+
+
+def colores_altura(h: np.ndarray, alfa: float = 1.0, h_max: float = H_COLOR_MAX) -> np.ndarray:
+    """RGBA en [0, 1] según la altura (viridis de 0 a h_max)."""
+    c = CMAP.map(np.clip(np.nan_to_num(h, nan=0.0) / h_max, 0, 1), mode="float")
     c[:, 3] = alfa
     return c
 
@@ -335,6 +350,8 @@ class PanelVolumen(QtWidgets.QWidget):
         # Valores EFECTIVOS de la pestaña «Calibración» para cada LiDAR (no van al yaml)
         self.calibracion: dict[str, dict] = {}
         self._en_vivo_dibujado = 0.0
+        self._perfil_dibujado = 0.0
+        self._estados_pintados = None
         self._construir()
         self.t_vivo = QtCore.QTimer(self, interval=100, timeout=self._tick_vivo)
 
@@ -420,6 +437,11 @@ class PanelVolumen(QtWidgets.QWidget):
                                    "(si no, punto medio entre perfiles). Aplica al iniciar.")
         self.chk_bordes.setChecked(self.wparams.vol_edge_from_velocity)
         f2.addWidget(self.chk_bordes)
+        self.chk_durante = QtWidgets.QCheckBox("Dibujar durante el paso")
+        self.chk_durante.setToolTip("Nube provisional y perfil transversal mientras pasa el objeto (vol_cloud_live).\n"
+                                    "Apagado (recomendado en la RPi): no se reconstruye ni se dibuja nada hasta que\n"
+                                    "termina el paso. La medición no cambia. Aplica al iniciar.")
+        f2.addWidget(self.chk_durante)
         f2.addStretch(1)
         b_cache = QtWidgets.QPushButton("Vaciar caché")
         b_cache.setToolTip(f"Borra los pasos simulados guardados en {self.cache}")
@@ -505,7 +527,8 @@ class PanelVolumen(QtWidgets.QWidget):
         fb = QtWidgets.QHBoxLayout()
         self.chk_vivo = QtWidgets.QCheckBox("Seguir en vivo")
         self.chk_vivo.setChecked(True)
-        self.chk_vivo.setToolTip("Muestra la captura en curso; desmarcado, la medición seleccionada en la tabla")
+        self.chk_vivo.setToolTip("Muestra cada medición al terminar el paso (y la captura en curso si está activo\n"
+                                 "«Dibujar durante el paso», en ⚙); desmarcado, la medición seleccionada en la tabla")
         self.chk_vivo.toggled.connect(lambda on: on or self._seleccion())
         fb.addWidget(self.chk_vivo)
         fb.addStretch(1)
@@ -544,7 +567,8 @@ class PanelVolumen(QtWidgets.QWidget):
             c.setChecked(True)
             fila.addWidget(c)
         self.chk_sup.setToolTip("Malla h(x, y) de la medición (solo en la final, como en RViz)")
-        self.chk_planos.setToolTip("Plano de corte del LiDAR de volumen y del de velocidad, en la captura en vivo")
+        self.chk_planos.setToolTip("Plano de corte del LiDAR de volumen en la captura en curso\n"
+                                   "(solo con «Dibujar durante el paso», en ⚙)")
         fila.addStretch(1)
         b_vista = QtWidgets.QPushButton("Vista inicial")
         b_vista.clicked.connect(self._vista_inicial)
@@ -596,11 +620,58 @@ class PanelVolumen(QtWidgets.QWidget):
         self.g_sup.showGrid(x=True, y=True, alpha=0.15)
         self.img_sup = pg.ImageItem()
         self.g_sup.addItem(self.img_sup)
-        barra = pg.ColorBarItem(values=(0, H_COLOR_MAX), colorMap=CMAP, label="altura [m]", interactive=False)
+        self.barra_sup = barra = pg.ColorBarItem(values=(0, H_COLOR_MAX), colorMap=CMAP, label="altura [m]",
+                                                 interactive=False)
         barra.setImageItem(pg.ImageItem(), insert_in=self.g_sup.getPlotItem())   # solo la escala
         self.txt_sup = pg.TextItem("", color="#e6edf3", anchor=(0, 1))
         self.g_sup.addItem(self.txt_sup)
+        # Altura bajo el cursor: celda MEDIDA (perfil más cercano, celda lateral), no la imagen remuestreada
+        self._malla_sup = None
+        self.celda_sup = QtWidgets.QGraphicsRectItem()
+        self.celda_sup.setPen(pg.mkPen("#ffffff", width=1))
+        self.celda_sup.setZValue(10)
+        self.celda_sup.hide()
+        self.g_sup.addItem(self.celda_sup)
+        self.txt_cursor = pg.TextItem("", color="#e6edf3", anchor=(0, 1), fill=pg.mkBrush(15, 19, 24, 220),
+                                      border=pg.mkPen(BORDE))
+        self.txt_cursor.setZValue(11)
+        self.txt_cursor.hide()
+        self.g_sup.addItem(self.txt_cursor)
+        self._proxy_cursor = pg.SignalProxy(self.g_sup.scene().sigMouseMoved, rateLimit=30, slot=self._cursor_superior)
         return self.g_sup
+
+    def _limpiar_cursor_superior(self, malla: bool = True):
+        if malla:
+            self._malla_sup = None
+        self.celda_sup.hide()
+        self.txt_cursor.hide()
+
+    def _cursor_superior(self, evento):
+        pos = evento[0]
+        malla = self._malla_sup
+        if malla is None or not self.g_sup.sceneBoundingRect().contains(pos):
+            self.celda_sup.hide()
+            self.txt_cursor.hide()
+            return
+        xu, xs, hs, y, dx, dy, idx = malla
+        p = self.g_sup.getPlotItem().vb.mapSceneToView(pos)
+        i = int(round((p.x() - xu[0]) / dx))
+        j = int(round((p.y() - y[0]) / dy))
+        if not (0 <= i < len(xu) and 0 <= j < len(y)):
+            self.celda_sup.hide()
+            self.txt_cursor.hide()
+            return
+        k = int(idx[i])
+        h = float(hs[k, j])
+        # celda medida: de punto medio a punto medio entre perfiles vecinos
+        x0 = 0.5 * (xs[k - 1] + xs[k]) if k > 0 else xs[k] - dx / 2
+        x1 = 0.5 * (xs[k] + xs[k + 1]) if k + 1 < len(xs) else xs[k] + dx / 2
+        self.celda_sup.setRect(QtCore.QRectF(x0, y[j] - dy / 2, x1 - x0, dy))
+        self.celda_sup.show()
+        alto = f"h = {h:.3f} m" if math.isfinite(h) else "sin dato"
+        self.txt_cursor.setText(f"{alto}\nx = {xs[k]:+.2f} m  y = {y[j]:+.2f} m\nperfil {k + 1}/{len(xs)}")
+        self.txt_cursor.setPos(p.x(), p.y())
+        self.txt_cursor.show()
 
     def _construir_areas(self) -> QtWidgets.QWidget:
         self.g_area = pg.PlotWidget()
@@ -636,7 +707,8 @@ class PanelVolumen(QtWidgets.QWidget):
         else:     # datos reales: la calibración aplicada (offset de rango, rayo abajo, sentido, relación)
             vp = replace(vp, **self.calibracion.get("vel", {}))
             wp = replace(wp, **self.calibracion.get("vol", {}))
-        return vp, replace(wp, vol_edge_from_velocity=self.chk_bordes.isChecked())
+        return vp, replace(wp, vol_edge_from_velocity=self.chk_bordes.isChecked(),
+                           vol_cloud_live=self.chk_durante.isChecked())
 
     def fijar_calibracion(self, clave: str, efectivos: dict | None):
         """Valores efectivos de un LiDAR ("vel" o "vol") que deja la pestaña «Calibración». Se usan con
@@ -660,7 +732,7 @@ class PanelVolumen(QtWidgets.QWidget):
     def _bloquear(self, on: bool):
         """Mientras se genera o se lee no se cambia la fuente ni el escenario."""
         self.leyendo = on
-        for w in (self.c_fuente, self.c_escenario, self.w_topicos, self.b_iniciar, self.chk_bordes,
+        for w in (self.c_fuente, self.c_escenario, self.w_topicos, self.b_iniciar, self.chk_bordes, self.chk_durante,
                   self.s_kmh, self.c_sentido, self.s_lat, self.s_yaw):
             w.setEnabled(not on)
 
@@ -822,7 +894,8 @@ class PanelVolumen(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------ refresco
     def refrescar(self, dibujar: bool):
-        """Mediciones y estado siempre; los gráficos solo con la pestaña visible."""
+        """Mediciones y estado siempre; los gráficos solo con la pestaña visible y sin objeto bajo el
+        pórtico (salvo «Dibujar durante el paso»): la reconstrucción se muestra al terminar."""
         d = self.proc.tomar()
         for m in d["mediciones"]:
             self._medicion(m)
@@ -832,18 +905,25 @@ class PanelVolumen(QtWidgets.QWidget):
         tp = f" · {d['t_proc'] * 1e3:.0f} ms/escaneo" if math.isfinite(d["t_proc"]) else ""
         v = f" · v {d['v'] * KMH:+.1f} km/h" if math.isfinite(d["v"]) else ""
         self.l_info.setToolTip(f"escaneos: {d['n_vel']} velocidad, {d['n_vol']} volumen{tp}{v}")
-        if not dibujar:
+        en_paso = VolState(d["estado_vol"]) in EN_PASO_VOL or PassState(d["estado_vel"]) in EN_PASO_VEL
+        durante = self.proc.wp.vol_cloud_live
+        if not dibujar or (en_paso and not durante):
             return
-        if d["ultimo_vol"] is not None:
+        ahora = time.monotonic()
+        if d["ultimo_vol"] is not None and (en_paso or ahora - self._perfil_dibujado > PERFIL_REPOSO_S):
+            self._perfil_dibujado = ahora
             self._dibujar_perfil(*d["ultimo_vol"])
         nube = d["nube"]
         if nube is not None and nube.provisional and self.chk_vivo.isChecked():
-            ahora = time.monotonic()
             if ahora - self._en_vivo_dibujado > 0.25:     # la nube crece en cada perfil: ~4 Hz alcanza
                 self._en_vivo_dibujado = ahora
                 self._mostrar(nube.reconstruction, final=False)
 
     def _pintar_estados(self, ev, ew, listo, parcial, perfiles):
+        clave = (ev, ew, listo, round(parcial, 2) if math.isfinite(parcial) else None, perfiles)
+        if clave == self._estados_pintados:
+            return
+        self._estados_pintados = clave
         tv, cv = ESTADOS_VEL[PassState(ev)]
         tw, cw = ESTADOS_VOL[VolState(ew)]
         self.l_vel.setText(f"Velocidad: <b style='color:{cv}'>{tv}</b>")
@@ -887,6 +967,8 @@ class PanelVolumen(QtWidgets.QWidget):
     # ------------------------------------------------------------------ reconstrucción
     def _mostrar(self, rec: Reconstruction, final: bool, m: Measurement | None = None):
         self._rec_vista = rec
+        self._h_escala = escala_altura(rec)        # la misma escala en la 3D y en la vista superior
+        self.barra_sup.setLevels((0.0, self._h_escala))
         self._mostrar_3d(rec, final)
         self._mostrar_superior(rec, m)
         if m is not None:
@@ -911,12 +993,12 @@ class PanelVolumen(QtWidgets.QWidget):
         if len(pts) > 150_000:      # la RPi dibuja bien hasta ~150 mil puntos
             pts = pts[:: math.ceil(len(pts) / 150_000)]
         if len(pts):
-            self.gl_nube.setData(pos=pts[:, :3], color=colores_altura(pts[:, 3]), size=2.5)
+            self.gl_nube.setData(pos=pts[:, :3], color=colores_altura(pts[:, 3], h_max=self._h_escala), size=2.5)
         else:
             self.gl_nube.setData(pos=np.zeros((1, 3)), color=(0, 0, 0, 0))
         tri = surface_triangles(rec, step=2) if final else np.empty((0, 3, 3))
         if len(tri):
-            col = colores_altura(tri[:, :, 2].reshape(-1), alfa=0.85).reshape(-1, 3, 4)
+            col = colores_altura(tri[:, :, 2].reshape(-1), alfa=0.85, h_max=self._h_escala).reshape(-1, 3, 4)
             self.gl_sup.setMeshData(vertexes=tri, vertexColors=col)
         else:
             self.gl_sup.setMeshData(vertexes=np.zeros((1, 3, 3)))
@@ -935,6 +1017,7 @@ class PanelVolumen(QtWidgets.QWidget):
         if len(x) < 2 or h.size == 0:
             self.img_sup.clear()
             self.txt_sup.setText("")
+            self._limpiar_cursor_superior()
             return
         # Perfiles a x irregulares: se remuestrea a una malla uniforme (vecino más cercano) solo para
         # mostrar. NaN = sin dato -> transparente, nunca 0.
@@ -945,12 +1028,14 @@ class PanelVolumen(QtWidgets.QWidget):
         idx = np.clip(np.searchsorted(xs, xu), 1, len(xs) - 1)
         idx -= (xu - xs[idx - 1]) < (xs[idx] - xu)
         img = hs[idx]
-        rgba = CMAP.map(np.clip(np.nan_to_num(img, nan=0.0) / H_COLOR_MAX, 0, 1).reshape(-1), mode="byte")
+        rgba = CMAP.map(np.clip(np.nan_to_num(img, nan=0.0) / self._h_escala, 0, 1).reshape(-1), mode="byte")
         rgba = rgba.reshape(img.shape[0], img.shape[1], 4)
         rgba[..., 3] = np.where(np.isfinite(img), 255, 0)
         self.img_sup.setImage(rgba, autoLevels=False)
         dy = float(np.median(np.diff(y))) if len(y) > 1 else 0.02
         self.img_sup.setRect(QtCore.QRectF(xu[0] - dx / 2, y[0] - dy / 2, len(xu) * dx, len(y) * dy))
+        self._malla_sup = (xu, xs, hs, y, dx, dy, idx)
+        self._limpiar_cursor_superior(malla=False)
         if m is not None:
             self.txt_sup.setText(f"#{m.measurement_id}  V = {m.volume_m3:.2f} m³  L = {m.length_m:.2f} m")
             self.txt_sup.setPos(xu[0], y[0] - 0.2)
@@ -1062,6 +1147,7 @@ class PanelVolumen(QtWidgets.QWidget):
         self.c_area.setData([], [])
         self.g_area.setTitle("")
         self.img_sup.clear()
+        self._limpiar_cursor_superior()
         if self.vista3d is not None:
             self.gl_nube.setData(pos=np.zeros((1, 3)), color=(0, 0, 0, 0))
             self.gl_sup.setMeshData(vertexes=np.zeros((1, 3, 3)))

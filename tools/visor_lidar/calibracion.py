@@ -284,6 +284,35 @@ class PanelCalibracion(QtWidgets.QWidget):
                                "«Prueba de paso»). Volumen: vol_roi_z_max_m.")
         self.c_zmax["vel"].editingFinished.connect(lambda: self._compartido_cambiado("roi_z_max_m"))
 
+        def roi(minimo):
+            def crear(c):
+                if c != "vel":
+                    return None
+                w = _spin(-15, 0, 2, 0.1, "m") if minimo else _spin(0, 15, 2, 0.1, "m")
+                w.setValue(-3.0 if minimo else 3.0)
+                n = "roi_x_min_m" if minimo else "roi_x_max_m"
+                w.editingFinished.connect(lambda: self._compartido_cambiado(n))
+                return w
+            return crear
+        tip_roi = ("roi_x_min_m / roi_x_max_m: tramo del eje de avance x (marco mundo) donde se busca el piso, se mide\n"
+                   "su planitud y se buscan objetos. Compartido con «Prueba de paso» (lo usa también «Volumen 3D»).\n"
+                   "El abanico debe llegar al piso en toda la ROI.")
+        self.c_roi_min = fila_par("ROI x mín", roi(True), tip_roi)
+        self.c_roi_max = fila_par("ROI x máx", roi(False), tip_roi)
+
+        def umbral(c):
+            w = _spin(0.05, 5, 2, 0.05, "m")
+            w.setValue(0.2)
+            if c == "vel":
+                w.editingFinished.connect(lambda: self._compartido_cambiado("object_h_threshold_m"))
+            else:
+                w.editingFinished.connect(self._recalcular)
+            return w
+        self.c_umbral = fila_par("Umbral de objeto", umbral,
+                                 "Altura sobre el piso a partir de la cual hay objeto. Velocidad: object_h_threshold_m\n"
+                                 "(compartido con «Prueba de paso»). Volumen: vol_h_threshold_m (la línea punteada del\n"
+                                 "perfil transversal en «Volumen 3D»; se aplica allí y «Guardar» lo ofrece al yaml).")
+
         def fan(c):
             w = _spin(1, 360, 1, 5, "°")
             w.setValue(360)
@@ -465,8 +494,7 @@ class PanelCalibracion(QtWidgets.QWidget):
         if not self._iniciado:
             self._iniciado = True
             self._cargar_nominales()
-        for n, (w, factor) in (("roi_z_max_m", (self.c_zmax["vel"], 1.0)),
-                               ("fan_angle_rad", (self.c_fan["vel"], 180 / math.pi))):
+        for n, (w, factor) in self._compartidos().items():
             v = getattr(self.v.paso.params_form, n) * factor
             if not math.isclose(w.value(), round(v, w.decimals()), abs_tol=1e-9):
                 w.blockSignals(True)
@@ -488,6 +516,7 @@ class PanelCalibracion(QtWidgets.QWidget):
         wp = self._nominales("vol")
         self.c_zmax["vol"].setValue(wp.vol_roi_z_max_m)
         self.c_fan["vol"].setValue(math.degrees(wp.fan_angle_rad))
+        self.c_umbral["vol"].setValue(wp.vol_h_threshold_m)
         for w, v in ((self.c_plano, wp.vol_plane_offset_m), (self.c_yoff, wp.y_offset_m), (self.c_vely, wp.vel_plane_y_m)):
             w.blockSignals(True)
             w.setValue(v)
@@ -651,14 +680,15 @@ class PanelCalibracion(QtWidgets.QWidget):
                        angle_tol_ok_rad=tol.cal_angle_tol_ok_rad, angle_tol_max_rad=tol.cal_angle_tol_max_rad)
         if c == "vel":
             return calibrate_mount(e.pila_vacio, e.ang, self.c_h[c].value(), math.radians(self.c_abajo[c].value()),
-                                   roi_x_m=(q.roi_x_min_m - q.x_offset_m, q.roi_x_max_m - q.x_offset_m),
-                                   roi_z_max_m=self.c_zmax[c].value(), object_h_threshold_m=q.object_h_threshold_m,
+                                   roi_x_m=(self.c_roi_min[c].value() - q.x_offset_m,
+                                            self.c_roi_max[c].value() - q.x_offset_m),
+                                   roi_z_max_m=self.c_zmax[c].value(), object_h_threshold_m=self.c_umbral[c].value(),
                                    fan_angle_rad=math.radians(self.c_fan[c].value()), fan_center_rad=self._fan(c)[1],
                                    coord_offset_m=q.x_offset_m, **comunes)
         y0 = self.c_yoff.value()                # la ROI lateral es del carril; la rutina trabaja desde el sensor
         return calibrate_mount(e.pila_vacio, e.ang, self.c_h[c].value(), math.radians(self.c_abajo[c].value()),
                                roi_x_m=(q.vol_roi_y_min_m - y0, q.vol_roi_y_max_m - y0),
-                               roi_z_max_m=self.c_zmax[c].value(), object_h_threshold_m=q.vol_h_threshold_m,
+                               roi_z_max_m=self.c_zmax[c].value(), object_h_threshold_m=self.c_umbral[c].value(),
                                fan_angle_rad=math.radians(self.c_fan[c].value()), fan_center_rad=self._fan(c)[1],
                                axis_name="y", coord_offset_m=y0, **comunes)
 
@@ -740,7 +770,7 @@ class PanelCalibracion(QtWidgets.QWidget):
     def _roi(self, c: str) -> tuple[float, float, float]:
         q = self._nominales(c)
         if c == "vel":
-            return q.roi_x_min_m, q.roi_x_max_m, self.c_zmax[c].value()
+            return self.c_roi_min[c].value(), self.c_roi_max[c].value(), self.c_zmax[c].value()
         return q.vol_roi_y_min_m, q.vol_roi_y_max_m, self.c_zmax[c].value()
 
     def _dibujar(self, c: str):
@@ -824,9 +854,19 @@ class PanelCalibracion(QtWidgets.QWidget):
         for c, w in self.lbl_abajo.items():
             w.setText(f"= {ros_a_sensor(self.c_abajo[c].value()):+.1f}° en la marca")
 
+    def _compartidos(self) -> dict[str, tuple[QtWidgets.QDoubleSpinBox, float]]:
+        """Campos del LiDAR de velocidad que son los mismos de «Prueba de paso»: nombre -> (campo, factor)."""
+        return {"roi_z_max_m": (self.c_zmax["vel"], 1.0), "fan_angle_rad": (self.c_fan["vel"], 180 / math.pi),
+                "roi_x_min_m": (self.c_roi_min["vel"], 1.0), "roi_x_max_m": (self.c_roi_max["vel"], 1.0),
+                "object_h_threshold_m": (self.c_umbral["vel"], 1.0)}
+
     def _compartido_cambiado(self, nombre: str):
-        """roi_z_max_m y fan_angle_rad del LiDAR de velocidad: mismo campo que «Prueba de paso»."""
-        w = self.c_zmax["vel"] if nombre == "roi_z_max_m" else self.c_fan["vel"]
+        """Campo del LiDAR de velocidad compartido con «Prueba de paso» (ver ``_compartidos``)."""
+        w = self._compartidos()[nombre][0]
+        if self.c_roi_max["vel"].value() - self.c_roi_min["vel"].value() < 0.5:
+            QtWidgets.QMessageBox.warning(self, "ROI", "La ROI debe medir al menos 0.5 m.")
+            w.setValue(getattr(self.v.paso.params_form, nombre))
+            return
         w_paso = self.v.paso.campos[nombre][0]
         if math.isclose(w_paso.value(), w.value(), abs_tol=1e-9):
             return
@@ -918,9 +958,13 @@ class PanelCalibracion(QtWidgets.QWidget):
         q = self._nominales(c)
         out = {"mount_height_m": r.height_m + q.floor_z_m, "angle_offset_rad": r.angle_offset_rad,
                "angle_direction": r.angle_direction, "range_bias_m": r.range_bias_for(b, s)}
-        if c == "vol":
+        if c == "vel":
+            out.update(roi_x_min_m=self.c_roi_min[c].value(), roi_x_max_m=self.c_roi_max[c].value(),
+                       object_h_threshold_m=self.c_umbral[c].value())
+        else:
             out.update(y_offset_m=self.c_yoff.value(), vol_plane_offset_m=self.c_plano.value(),
-                       vel_plane_y_m=self.c_vely.value(), fan_angle_rad=math.radians(self.c_fan[c].value()))
+                       vel_plane_y_m=self.c_vely.value(), fan_angle_rad=math.radians(self.c_fan[c].value()),
+                       vol_h_threshold_m=self.c_umbral[c].value())
         return out
 
     def _aplicar(self, silencioso=False) -> bool:
@@ -961,7 +1005,7 @@ class PanelCalibracion(QtWidgets.QWidget):
         if ew is not None:
             pw = self._nominales("vol")
             nuevos = {k: ew[k] for k in ("mount_height_m", "y_offset_m", "vol_plane_offset_m", "vel_plane_y_m",
-                                         "fan_angle_rad")
+                                         "fan_angle_rad", "vol_h_threshold_m")
                       if not math.isclose(ew[k], getattr(pw, k), abs_tol=5e-4)}
             if nuevos:
                 cambios.append(("volume_node", replace(pw, **nuevos), list(nuevos)))
@@ -1001,6 +1045,8 @@ class PanelCalibracion(QtWidgets.QWidget):
                              "pendiente_piso_deg": None if r.floor_slope_rad is None else deg(r.floor_slope_rad),
                              "range_bias_m": b, "range_scale": s, "altura_max_m": self.c_zmax[l.clave].value(),
                              "abanico_deg": self.c_fan[l.clave].value(),
+                             "umbral_objeto_m": self.c_umbral[l.clave].value(),
+                             "roi_m": list(self._roi(l.clave)[:2]),
                              "abanico_centro_deg": math.degrees(self._fan(l.clave)[1])},
                 "resultado": {"offset_rango_m": r.range_offset_m, "offset_sigma_m": r.range_offset_sigma_m,
                               "offset_estado": r.offset_status, "altura_vista_m": r.seen_height_m,
