@@ -71,6 +71,18 @@ def test_range_scale_corrects_a_sensor_that_measures_long():
     assert abs(sin.area_m2 - ref.area_m2) > 3 * abs(con.area_m2 - ref.area_m2)
 
 
+
+def test_fan_of_interest_drops_rays_outside():
+    """Abanico del transversal (D25): uno que cubre la ROI no cambia nada; uno estrecho recorta el objeto."""
+    scan = PorticoSim(CLEAN, Box3D(2.0, 2.45, 2.0), Motion3D(v=0.0, d0=1.0)).volume_scan(0.0)
+    ref = SectionProcessor(VolumeParams()).process(scan)
+    ancho = SectionProcessor(VolumeParams(fan_angle_rad=math.radians(60))).process(scan)
+    estrecho = SectionProcessor(VolumeParams(fan_angle_rad=math.radians(30))).process(scan)
+    assert ancho.area_m2 == pytest.approx(ref.area_m2, rel=1e-6)
+    assert estrecho.occupied and estrecho.width < 1.7          # techo a 3 m del sensor: ±3·tan 15° = ±0.80 m
+    # Con menos de vol_min_data_fraction de la ROI dentro del abanico, todo escaneo es SIN DATO
+    assert SectionProcessor(VolumeParams(fan_angle_rad=math.radians(20))).process(scan).no_data
+
 def test_nominal_is_arrow_to_floor():
     """Flecha 0° del S2E al piso = rayo ROS 180° (D23): +π/2, también en el simulador del pórtico."""
     assert VolumeParams().angle_offset_rad == pytest.approx(math.pi / 2)

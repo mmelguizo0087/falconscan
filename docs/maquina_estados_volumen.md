@@ -297,6 +297,7 @@ Resultado: `VALIDA` (sin banderas), `CON_ADVERTENCIAS`, `INVALIDA` o `DESCARTADA
 | `vol_plane_offset_m` | 0.0 | m | Distancia sobre x del centro de rotación del LiDAR de velocidad al plano transversal. Instalación del 2026-10-27: **0 cm**. La calibración (paso 4) la verifica con un objeto en el cruce de los planos |
 | `vel_plane_y_m` | 0.0 | m | Posición lateral del plano de velocidad (informativo); la calibración (paso 4) la mide |
 | `vol_time_offset_s` | 0.0 | s | Corrección de reloj/latencia; ajustar con `sync_offset_s` de varios pasos |
+| `fan_angle_rad` / `fan_center_rad` | 2π / 0 | rad | Abanico de interés como en velocidad (D16, D25): rayos a más de la mitad de la apertura del centro (desde la vertical, + hacia +y) quedan NaN. Se ajusta en la calibración |
 | `vol_roi_y_min_m` / `vol_roi_y_max_m` | −2.0 / 2.0 | m | Ancho ≤ 2.6 m + holgura de centrado |
 | `vol_roi_z_max_m` | 4.5 | m | Por encima: pórtico |
 | `vol_grid_dy_m` | 0.02 | m | ~2 × la resolución lateral |

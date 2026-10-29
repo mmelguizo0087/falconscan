@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from falconscan_velocity.core import Scan, height_profile, median_filter, polar_to_xz, validate_ranges
+from falconscan_velocity.core import Scan, fan_mask, height_profile, median_filter, polar_to_xz, validate_ranges
 
 from .params import VolumeParams
 
@@ -72,6 +72,7 @@ class SectionProcessor:
         r_min = max(p.range_min_m, scan.range_min)
         r_max = min(p.range_max_m, scan.range_max)
         r = (validate_ranges(scan.ranges, r_min, r_max) - p.range_bias_m) * p.range_scale
+        r[~fan_mask(scan.angles, self.geom, p.fan_angle_rad, p.fan_center_rad)] = np.nan
         r = median_filter(r, p.median_window, max_spread=p.median_max_spread_m)
         y, z = polar_to_xz(r, scan.angles, self.geom)
         t = scan.stamp + p.vol_time_offset_s + np.arange(r.size) * scan.time_increment

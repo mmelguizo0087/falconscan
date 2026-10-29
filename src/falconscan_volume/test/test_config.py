@@ -12,7 +12,8 @@ CFG = Path(__file__).resolve().parents[2] / "falconscan_velocity" / "config" / "
 
 # Montaje y calibración: dependen de la instalación (cinta, unidad, calibración), no del algoritmo
 INSTALACION = {"mount_height_m", "angle_offset_rad", "angle_direction", "y_offset_m", "floor_z_m", "range_bias_m",
-               "range_scale", "vol_plane_offset_m", "vel_plane_y_m", "vol_time_offset_s"}
+               "range_scale", "vol_plane_offset_m", "vel_plane_y_m", "vol_time_offset_s", "fan_angle_rad",
+               "fan_center_rad"}
 
 
 def test_yaml_matches_params():

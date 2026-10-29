@@ -31,6 +31,8 @@ class VolumeParams:
     range_max_m: float = 12.0
     median_window: int = 3
     median_max_spread_m: float = 0.15
+    fan_angle_rad: float = 2 * math.pi       # abanico de interés como el de velocidad (D16, D25); 2π = sin filtro
+    fan_center_rad: float = 0.0              # 0 = centrado en el nadir, + hacia +y
     # --- ROI lateral y malla ---
     vol_roi_y_min_m: float = -2.0
     vol_roi_y_max_m: float = 2.0

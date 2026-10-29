@@ -133,6 +133,11 @@ volume_node:
     range_max_m: 12.0
     median_window: 3
     median_max_spread_m: 0.15
+    # Abanico de interés, igual que velocity_node (D16, D25): ángulos desde la vertical hacia abajo,
+    # + hacia +y; sigue al nadir calibrado. 6.2831853 (360°) = sin filtro. Para cubrir la ROI hasta
+    # |y| = Y: apertura > 2·atan(Y / H). Se ajusta en la pestaña «Calibración» del visor.
+    fan_angle_rad: 6.2831853
+    fan_center_rad: 0.0          # 0 = centrado en el nadir
 
     # --- ROI lateral y malla ---
     vol_roi_y_min_m: -2.0
